@@ -24,7 +24,8 @@ let state = {
     startTime: Date.now(),
     joinTime: Date.now(),
     profile: '',
-    messageHistory: []
+    messageHistory: [],
+    use24Hour: true
 };
 
 function saveSettings() {
@@ -32,7 +33,8 @@ function saveSettings() {
         userName: state.userName,
         theme: state.theme,
         profile: state.profile,
-        joinTime: state.joinTime
+        joinTime: state.joinTime,
+        use24Hour: state.use24Hour
     };
     localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(settings));
 }
@@ -45,6 +47,7 @@ function loadSettings() {
         state.theme = settings.theme || 'light';
         state.profile = settings.profile || '';
         state.joinTime = settings.joinTime || Date.now();
+        state.use24Hour = settings.use24Hour !== undefined ? settings.use24Hour : true;
         body.dataset.theme = state.theme;
     }
 }
@@ -53,10 +56,38 @@ function generateFakeIP() {
     return [0, 0, 0, 0].map(() => Math.floor(Math.random() * 256)).join('.');
 }
 
+function getCircledNumber(num) {
+    if (num >= 1 && num <= 20) {
+        return String.fromCharCode(0x245F + num); // ① to ⑳
+    } else if (num >= 21 && num <= 35) {
+        return String.fromCharCode(0x3250 + (num - 20)); // ㉑ to ㉟
+    } else if (num >= 36 && num <= 50) {
+        return String.fromCharCode(0x32B0 + (num - 35)); // ㊱ to ㊿
+    }
+    return num.toString(); // Fallback for numbers outside range
+}
+
 function getCurrentTimestamp() {
     const now = new Date();
-    const date = now.toLocaleDateString();
-    const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const month = getCircledNumber(now.getMonth() + 1);
+    const day = getCircledNumber(now.getDate());
+    const year = now.getFullYear();
+    
+    // Convert year to two circled numbers (e.g., 2025 → ⑳㉕)
+    const century = Math.floor(year / 100); // 20
+    const yearPart = year % 100; // 25
+    const yearCircled = `${getCircledNumber(century)}${getCircledNumber(yearPart)}`;
+    
+    const date = `${month}/${day}/${yearCircled}`;
+    
+    // Time format based on user preference
+    let time;
+    if (state.use24Hour) {
+        time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } else {
+        time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    }
+    
     return { date, time };
 }
 
@@ -262,6 +293,12 @@ function handleCommand(input) {
             const { date, time } = getCurrentTimestamp();
             addMessageToChat(`Current time: ${date} ${time}`, 'system-message');
             break;
+        case '12':
+        case '24':
+            state.use24Hour = !state.use24Hour;
+            saveSettings();
+            addMessageToChat(`Time format switched to ${state.use24Hour ? '24-hour' : '12-hour'} mode.`, 'system-message');
+            break;
         case 'whoami':
             addMessageToChat(`You are ${escapeHtml(state.userName)} [${state.ipAddress}]`, 'system-message');
             break;
@@ -304,7 +341,15 @@ function handleCommand(input) {
             break;
         case 'echo':
             if (args) {
-                addMessageToChat(escapeHtml(args), 'system-message');
+                const { date, time } = getCurrentTimestamp();
+                const parsedMessage = parseMarkdown(args);
+                const emojiClass = isEmojiOnly(args) ? ' big-emoji' : '';
+                const html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span class="message-content${emojiClass}">${parsedMessage}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+                addMessageToChat(html, 'user-message', true);
             } else {
                 addMessageToChat('Usage: /echo [message]', 'system-message');
             }
@@ -401,7 +446,8 @@ function showHelp() {
         <br>/review - Show last 12 messages (/ also works).
         <br>/nightmode - Toggle dark/light theme.
         <br>/time - Display current date and time.
-        <br>/echo [message] - Echo a message.
+        <br>/12 or /24 - Toggle 12/24 hour time format.
+        <br>/echo [message] - Echo a message (% also works).
         <br>/roll [sides] - Roll a dice (default: 6 sides).
         <br>/flip - Flip a coin.
         <br>/8ball - Ask the Magic 8-Ball a question.
@@ -431,9 +477,10 @@ function handleMessage(message) {
 
 function handleEmote(action) {
     const { date, time } = getCurrentTimestamp();
+    const parsedAction = parseMarkdown(action);
     const html = `
         <span class="timestamp">[${date}]</span>
-        <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${escapeHtml(action)}</span>
+        <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${parsedAction}</span>
         <span class="timestamp">[${time}]</span>
     `;
     addMessageToChat(html, 'user-message', true);
@@ -487,6 +534,46 @@ chatForm.addEventListener('submit', (e) => {
         } else if (message.startsWith(':') && message.length > 1) {
             // :text becomes /me text
             handleEmote(message.slice(1).trim());
+        } else if (message.startsWith('%') && message.length > 1) {
+            // %text becomes /echo text
+            const echoText = message.slice(1).trim();
+            if (echoText) {
+                const { date, time } = getCurrentTimestamp();
+                const parsedMessage = parseMarkdown(echoText);
+                const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
+                const html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span class="message-content${emojiClass}">${parsedMessage}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+                addMessageToChat(html, 'user-message', true);
+            }
+        } else if (message.startsWith('.') && message.length > 1) {
+            // .text becomes /name text
+            const newName = message.slice(1).trim();
+            if (newName) {
+                state.userName = newName;
+                saveSettings();
+                addMessageToChat(`User [${state.ipAddress}], aka ${escapeHtml(state.userName)}.`, 'system-message');
+            }
+        } else if (message === '.') {
+            // Just . becomes /name (random)
+            const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
+            const nameIndex = Math.floor(Math.random() * 10);
+            state.userName = `${randomName}_${nameIndex}`;
+            saveSettings();
+            addMessageToChat(`[${state.ipAddress}] wants to be anonymous. Hello, ${escapeHtml(state.userName)}`, 'system-message');
+        } else if (message.startsWith('@') && message.length > 1) {
+            // @text appends to username
+            const suffix = message.slice(1).trim();
+            if (suffix) {
+                state.userName = state.userName + suffix;
+                saveSettings();
+                addMessageToChat(`User [${state.ipAddress}], aka ${escapeHtml(state.userName)}.`, 'system-message');
+            }
+        } else if (message === '@') {
+            // Just @ shows current name
+            addMessageToChat(`You are ${escapeHtml(state.userName)} [${state.ipAddress}]`, 'system-message');
         } else if (message.startsWith('/')) {
             handleCommand(message);
         } else {
