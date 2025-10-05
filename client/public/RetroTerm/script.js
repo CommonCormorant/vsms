@@ -19,7 +19,6 @@ const body = document.body;
 
 let state = {
     userName: 'guest',
-    ipAddress: '',
     theme: 'light',
     startTime: Date.now(),
     joinTime: Date.now(),
@@ -50,10 +49,6 @@ function loadSettings() {
         state.use24Hour = settings.use24Hour !== undefined ? settings.use24Hour : true;
         body.dataset.theme = state.theme;
     }
-}
-
-function generateFakeIP() {
-    return [0, 0, 0, 0].map(() => Math.floor(Math.random() * 256)).join('.');
 }
 
 function getCircledNumber(num) {
@@ -233,13 +228,13 @@ function handleCommand(input) {
             if (args) {
                 state.userName = args;
                 saveSettings();
-                addMessageToChat(`User [${state.ipAddress}], aka ${escapeHtml(state.userName)}.`, 'system-message');
+                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
             } else {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
                 const nameIndex = Math.floor(Math.random() * 10);
                 state.userName = `${randomName}_${nameIndex}`;
                 saveSettings();
-                addMessageToChat(`[${state.ipAddress}] wants to be anonymous. Hello, ${escapeHtml(state.userName)}`, 'system-message');
+                addMessageToChat(`You have been assigned a random name: ${escapeHtml(state.userName)}`, 'system-message');
             }
             break;
         case 'nightmode':
@@ -459,23 +454,39 @@ function showHelp() {
         <br>/help - Show this help message (? also works).`, 'system-message');
 }
 
-function handleMessage(message) {
+async function handleMessage(message) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return;
+    }
+
     const { date, time } = getCurrentTimestamp();
     const parsedMessage = parseMarkdown(message);
-    
-    // Check if message is emoji only
     const emojiClass = isEmojiOnly(message) ? ' big-emoji' : '';
-    
+
     const html = `
         <span class="timestamp">[${date}]</span>
         <span class="user-name">${escapeHtml(state.userName)}:</span>
         <span class="message-content${emojiClass}">${parsedMessage}</span>
         <span class="timestamp">[${time}]</span>
     `;
-    addMessageToChat(html, 'user-message', true);
+
+    try {
+        await serverApi.sendMessage(sessionId, html);
+    } catch (error) {
+        console.error('Failed to send message:', error);
+        addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
+    }
 }
 
-function handleEmote(action) {
+async function handleEmote(action) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return;
+    }
+
     const { date, time } = getCurrentTimestamp();
     const parsedAction = parseMarkdown(action);
     const html = `
@@ -483,112 +494,145 @@ function handleEmote(action) {
         <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${parsedAction}</span>
         <span class="timestamp">[${time}]</span>
     `;
-    addMessageToChat(html, 'user-message', true);
+
+    try {
+        await serverApi.sendMessage(sessionId, html);
+    } catch (error) {
+        console.error('Failed to send emote:', error);
+        addMessageToChat(`Error sending emote: ${error.message}`, 'error-message');
+    }
 }
 
-function handleBroadcastCommand(command, args) {
-    // Commands that should be added to history
+async function handleBroadcastCommand(command, args) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return false;
+    }
+
+    let html = '';
+    const { date, time } = getCurrentTimestamp();
+
     switch (command) {
         case 'roll':
             const sides = args ? parseInt(args) : 6;
-            if (!isNaN(sides) && sides >= 2) {
-                const result = Math.floor(Math.random() * sides) + 1;
-                const { date, time } = getCurrentTimestamp();
-                const html = `
-                    <span class="timestamp">[${date}]</span>
-                    <span class="user-name">${escapeHtml(state.userName)}:</span>
-                    <span class="message-content">🎲 Rolled a d${sides}: ${result}</span>
-                    <span class="timestamp">[${time}]</span>
-                `;
-                addMessageToChat(html, 'user-message', true);
-                return true;
-            }
-            return false;
+            if (isNaN(sides) || sides < 2) return false;
+            const result = Math.floor(Math.random() * sides) + 1;
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(state.userName)}:</span>
+                <span class="message-content">🎲 Rolled a d${sides}: ${result}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
         case 'flip':
             const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            const { date, time } = getCurrentTimestamp();
-            const html = `
+            html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="user-name">${escapeHtml(state.userName)}:</span>
                 <span class="message-content">🪙 Coin flip: ${coin}</span>
                 <span class="timestamp">[${time}]</span>
             `;
-            addMessageToChat(html, 'user-message', true);
-            return true;
+            break;
         default:
             return false;
     }
+
+    try {
+        await serverApi.sendMessage(sessionId, html);
+        return true;
+    } catch (error) {
+        console.error(`Failed to send ${command}:`, error);
+        addMessageToChat(`Error sending command: ${error.message}`, 'error-message');
+        return false;
+    }
 }
 
-chatForm.addEventListener('submit', (e) => {
+chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const message = chatInput.value.trim();
     if (message) {
-        // Handle glyph shortcuts
-        if (message === '?') {
+        // Handle local commands first
+        if (message.startsWith('/') && (
+            message.startsWith('/help') || message.startsWith('/clear') || message.startsWith('/home') ||
+            message.startsWith('/review') || message.startsWith('/nightmode') || message.startsWith('/darkmode') ||
+            message.startsWith('/time') || message.startsWith('/12') || message.startsWith('/24') ||
+            message.startsWith('/whoami') || message.startsWith('/whois') || message.startsWith('/profile') ||
+            message.startsWith('/uptime') || message.startsWith('/version') || message.startsWith('/about') ||
+            message.startsWith('/hercules') || message.startsWith('/retroled') || message.startsWith('/crt') ||
+            message.startsWith('/8ball') || message.startsWith('/fortune')
+        )) {
+            handleCommand(message);
+        } else if (message.startsWith('/')) {
+            // Server-side commands
+            await handleCommand(message);
+        } else if (message === '?') {
             handleCommand('/help');
-        } else if (message === '~') {
+        } else if (message === '~' || message === '/home') {
             handleCommand('/clear');
         } else if (message === '/') {
             handleCommand('/review');
         } else if (message.startsWith(':') && message.length > 1) {
-            // :text becomes /me text
-            handleEmote(message.slice(1).trim());
+            await handleEmote(message.slice(1).trim());
         } else if (message.startsWith('%') && message.length > 1) {
-            // %text becomes /echo text
-            const echoText = message.slice(1).trim();
-            if (echoText) {
-                const { date, time } = getCurrentTimestamp();
-                const parsedMessage = parseMarkdown(echoText);
-                const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
-                const html = `
-                    <span class="timestamp">[${date}]</span>
-                    <span class="message-content${emojiClass}">${parsedMessage}</span>
-                    <span class="timestamp">[${time}]</span>
-                `;
-                addMessageToChat(html, 'user-message', true);
+            // Echo is special, it's a broadcast but formatted differently
+            const sessionId = getSessionId();
+            if (!sessionId) {
+                addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+            } else {
+                const echoText = message.slice(1).trim();
+                if (echoText) {
+                    const { date, time } = getCurrentTimestamp();
+                    const parsedMessage = parseMarkdown(echoText);
+                    const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
+                    const html = `
+                        <span class="timestamp">[${date}]</span>
+                        <span class="message-content${emojiClass}">${parsedMessage}</span>
+                        <span class="timestamp">[${time}]</span>
+                    `;
+                    await serverApi.sendMessage(sessionId, html);
+                }
             }
         } else if (message.startsWith('.') && message.length > 1) {
-            // .text becomes /name text
-            const newName = message.slice(1).trim();
-            if (newName) {
-                state.userName = newName;
-                saveSettings();
-                addMessageToChat(`User [${state.ipAddress}], aka ${escapeHtml(state.userName)}.`, 'system-message');
-            }
+            handleCommand(`/name ${message.slice(1).trim()}`);
         } else if (message === '.') {
-            // Just . becomes /name (random)
-            const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
-            const nameIndex = Math.floor(Math.random() * 10);
-            state.userName = `${randomName}_${nameIndex}`;
-            saveSettings();
-            addMessageToChat(`[${state.ipAddress}] wants to be anonymous. Hello, ${escapeHtml(state.userName)}`, 'system-message');
+            handleCommand('/name');
         } else if (message.startsWith('@') && message.length > 1) {
-            // @text appends to username
             const suffix = message.slice(1).trim();
             if (suffix) {
                 state.userName = state.userName + suffix;
                 saveSettings();
-                addMessageToChat(`User [${state.ipAddress}], aka ${escapeHtml(state.userName)}.`, 'system-message');
+                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
             }
         } else if (message === '@') {
-            // Just @ shows current name
-            addMessageToChat(`You are ${escapeHtml(state.userName)} [${state.ipAddress}]`, 'system-message');
-        } else if (message.startsWith('/')) {
-            handleCommand(message);
+            handleCommand('/whoami');
         } else {
-            handleMessage(message);
+            await handleMessage(message);
         }
         chatInput.value = '';
     }
 });
 
-function initializeApp() {
+function displayBroadcastMessage(htmlContent) {
+    // This function is called by the WebSocket handler in client.js
+    // It receives the pre-formatted HTML message from the server
+    addMessageToChat(htmlContent, 'user-message', true);
+}
+
+async function initializeApp() {
     loadSettings();
-    state.ipAddress = generateFakeIP();
     addMessageToChat('Welcome to RetroTerm.', 'system-message');
-    addMessageToChat(`Your IP is ${state.ipAddress}. Your name is ${escapeHtml(state.userName)}.`, 'system-message');
-    addMessageToChat('Type /help for a list of commands.', 'system-message');
+    addMessageToChat('Connecting to server...', 'system-message');
+
+    try {
+        await initializeSession(state.userName);
+        addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
+        connectWebSocket(); // Establish WebSocket connection
+        addMessageToChat('Type /help for a list of commands.', 'system-message');
+    } catch (error) {
+        addMessageToChat(`Connection failed: ${error.message}. Please refresh to try again.`, 'error-message');
+    }
+
     chatInput.focus();
 }
 
