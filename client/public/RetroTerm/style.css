@@ -253,6 +253,11 @@ body {
     margin: 1em 0;
 }
 
+.big-emoji {
+    font-size: 2em;
+    line-height: 1;
+}
+
 #chat-form {
     display: flex;
     gap: clamp(0.5rem, 2vw, 1rem);

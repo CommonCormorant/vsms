@@ -170,7 +170,7 @@ var db *sql.DB
 var dbMutex = &sync.Mutex{}
 
 func initDB() {
-	dsn := "user:password@tcp(127.0.0.1:3306)/vsms?parseTime=true"
+	dsn := "vsmsuser:/BunHun01Run%@tcp(127.0.0.1:3306)/vsms?parseTime=true"
 	var err error
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {

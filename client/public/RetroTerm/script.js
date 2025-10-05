@@ -23,7 +23,8 @@ let state = {
     theme: 'light',
     startTime: Date.now(),
     joinTime: Date.now(),
-    profile: ''
+    profile: '',
+    messageHistory: []
 };
 
 function saveSettings() {
@@ -161,7 +162,7 @@ function parseMarkdown(text) {
     return html;
 }
 
-function addMessageToChat(htmlContent, className = '') {
+function addMessageToChat(htmlContent, className = '', addToHistory = false) {
     const p = document.createElement('p');
     if (className) {
         p.className = className;
@@ -169,10 +170,25 @@ function addMessageToChat(htmlContent, className = '') {
     p.innerHTML = htmlContent;
     chatOutput.appendChild(p);
     scrollToBottom();
+    
+    if (addToHistory) {
+        state.messageHistory.push({ content: htmlContent, className: className });
+        if (state.messageHistory.length > 12) {
+            state.messageHistory.shift();
+        }
+    }
 }
 
 function isRetroTheme() {
-    return ['dark', 'hercules-orange', 'hercules-green', 'retroled', 'crt'].includes(state.theme);
+    return ['dark', 'hercules-orange', 'hercules-green', 'retroled', 'crt', 'crt-light'].includes(state.theme);
+}
+
+function isEmojiOnly(text) {
+    // Check if text is a single emoji (or multiple emojis with no other characters)
+    const emojiRegex = /^[\p{Emoji}\s]+$/u;
+    const hasNonWhitespace = /\S/.test(text);
+    const emojiCount = (text.match(/\p{Emoji}/gu) || []).length;
+    return emojiRegex.test(text) && hasNonWhitespace && emojiCount >= 1 && emojiCount <= 3;
 }
 
 function handleCommand(input) {
@@ -253,13 +269,7 @@ function handleCommand(input) {
         case 'emote':
         case 'em':
             if (args) {
-                const { date, time } = getCurrentTimestamp();
-                const html = `
-                    <span class="timestamp">[${date}]</span>
-                    <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${escapeHtml(args)}</span>
-                    <span class="timestamp">[${time}]</span>
-                `;
-                addMessageToChat(html, 'user-message');
+                handleEmote(args);
             } else {
                 addMessageToChat('Usage: /me [action]', 'system-message');
             }
@@ -304,13 +314,11 @@ function handleCommand(input) {
             if (isNaN(sides) || sides < 2) {
                 addMessageToChat('Usage: /roll [sides] (default: 6)', 'system-message');
             } else {
-                const result = Math.floor(Math.random() * sides) + 1;
-                addMessageToChat(`🎲 Rolled a d${sides}: ${result}`, 'system-message');
+                handleBroadcastCommand('roll', args);
             }
             break;
         case 'flip':
-            const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            addMessageToChat(`🪙 Coin flip: ${coin}`, 'system-message');
+            handleBroadcastCommand('flip', args);
             break;
         case '8ball':
             const responses = [
@@ -355,7 +363,25 @@ function handleCommand(input) {
         case 'help':
             showHelp();
             break;
+        case 'review':
+            if (state.messageHistory.length === 0) {
+                addMessageToChat('No recent messages to review.', 'system-message');
+            } else {
+                addMessageToChat('--- Recent History ---', 'system-message');
+                state.messageHistory.forEach(msg => {
+                    const p = document.createElement('p');
+                    if (msg.className) {
+                        p.className = msg.className;
+                    }
+                    p.innerHTML = msg.content;
+                    chatOutput.appendChild(p);
+                });
+                scrollToBottom();
+                addMessageToChat('--- End of History ---', 'system-message');
+            }
+            break;
         case 'clear':
+        case 'home':
             chatOutput.innerHTML = '';
             addMessageToChat('Chat cleared.', 'system-message');
             break;
@@ -371,7 +397,8 @@ function showHelp() {
         <br>/profile [bio] - Set your profile bio (leave empty to view).
         <br>/whoami - Display your current user info.
         <br>/whois [nickname] - Look up a user's info.
-        <br>/me [action] - Roleplay emote (/emote, /em also work).
+        <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
+        <br>/review - Show last 12 messages (/ also works).
         <br>/nightmode - Toggle dark/light theme.
         <br>/time - Display current date and time.
         <br>/echo [message] - Echo a message.
@@ -382,27 +409,85 @@ function showHelp() {
         <br>/uptime - Show session uptime.
         <br>/version - Show RetroTerm version.
         <br>/about - About RetroTerm.
-        <br>/clear - Clear the chat screen.
-        <br>/help - Show this help message.`, 'system-message');
+        <br>/clear or /home - Clear the chat screen (~ also works).
+        <br>/help - Show this help message (? also works).`, 'system-message');
 }
 
 function handleMessage(message) {
     const { date, time } = getCurrentTimestamp();
     const parsedMessage = parseMarkdown(message);
+    
+    // Check if message is emoji only
+    const emojiClass = isEmojiOnly(message) ? ' big-emoji' : '';
+    
     const html = `
         <span class="timestamp">[${date}]</span>
         <span class="user-name">${escapeHtml(state.userName)}:</span>
-        <span class="message-content">${parsedMessage}</span>
+        <span class="message-content${emojiClass}">${parsedMessage}</span>
         <span class="timestamp">[${time}]</span>
     `;
-    addMessageToChat(html, 'user-message');
+    addMessageToChat(html, 'user-message', true);
+}
+
+function handleEmote(action) {
+    const { date, time } = getCurrentTimestamp();
+    const html = `
+        <span class="timestamp">[${date}]</span>
+        <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${escapeHtml(action)}</span>
+        <span class="timestamp">[${time}]</span>
+    `;
+    addMessageToChat(html, 'user-message', true);
+}
+
+function handleBroadcastCommand(command, args) {
+    // Commands that should be added to history
+    switch (command) {
+        case 'roll':
+            const sides = args ? parseInt(args) : 6;
+            if (!isNaN(sides) && sides >= 2) {
+                const result = Math.floor(Math.random() * sides) + 1;
+                const { date, time } = getCurrentTimestamp();
+                const html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span class="user-name">${escapeHtml(state.userName)}:</span>
+                    <span class="message-content">🎲 Rolled a d${sides}: ${result}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+                addMessageToChat(html, 'user-message', true);
+                return true;
+            }
+            return false;
+        case 'flip':
+            const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
+            const { date, time } = getCurrentTimestamp();
+            const html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(state.userName)}:</span>
+                <span class="message-content">🪙 Coin flip: ${coin}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            addMessageToChat(html, 'user-message', true);
+            return true;
+        default:
+            return false;
+    }
 }
 
 chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const message = chatInput.value.trim();
     if (message) {
-        if (message.startsWith('/')) {
+        // Handle glyph shortcuts
+        if (message === '?') {
+            handleCommand('/help');
+        } else if (message === '~') {
+            handleCommand('/clear');
+        } else if (message === '/') {
+            handleCommand('/review');
+        } else if (message.startsWith(':') && message.length > 1) {
+            // :text becomes /me text
+            handleEmote(message.slice(1).trim());
+        } else if (message.startsWith('/')) {
             handleCommand(message);
         } else {
             handleMessage(message);
