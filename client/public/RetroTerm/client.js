@@ -97,10 +97,15 @@ function getSessionId() {
     return session.id;
 }
 
-function connectWebSocket() {
+function connectWebSocket(onMessageCallback) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Cannot connect to real-time server without a session.', 'error-message');
+        return;
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/ws`;
+    const wsUrl = `${protocol}//${host}/api/ws?sID=${sessionId}`;
 
     const ws = new WebSocket(wsUrl);
 
@@ -112,16 +117,12 @@ function connectWebSocket() {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            // The server broadcasts a JSON object with a 'message' field.
-            // This 'message' field contains the pre-formatted string.
             if (data.message) {
-                // We will create a function in script.js to handle displaying the raw message
-                displayBroadcastMessage(data.message);
+                onMessageCallback(data.message);
             }
         } catch (error) {
             console.error('Error parsing WebSocket message:', error);
-            // If it's not JSON, just display the raw text.
-            displayBroadcastMessage(event.data);
+            onMessageCallback(event.data);
         }
     };
 

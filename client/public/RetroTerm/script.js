@@ -217,7 +217,7 @@ function isEmojiOnly(text) {
     return emojiRegex.test(text) && hasNonWhitespace && emojiCount >= 1 && emojiCount <= 3;
 }
 
-function handleCommand(input) {
+function handleLocalCommand(input) {
     const parts = input.slice(1).trim().split(' ');
     const command = parts[0].toLowerCase();
     const args = parts.slice(1).join(' ');
@@ -295,16 +295,7 @@ function handleCommand(input) {
             addMessageToChat(`Time format switched to ${state.use24Hour ? '24-hour' : '12-hour'} mode.`, 'system-message');
             break;
         case 'whoami':
-            addMessageToChat(`You are ${escapeHtml(state.userName)} [${state.ipAddress}]`, 'system-message');
-            break;
-        case 'me':
-        case 'emote':
-        case 'em':
-            if (args) {
-                handleEmote(args);
-            } else {
-                addMessageToChat('Usage: /me [action]', 'system-message');
-            }
+            addMessageToChat(`You are ${escapeHtml(state.userName)}.`, 'system-message');
             break;
         case 'profile':
             if (args) {
@@ -321,44 +312,17 @@ function handleCommand(input) {
             if (args) {
                 const targetName = args.trim();
                 if (targetName.toLowerCase() === state.userName.toLowerCase()) {
-                    const location = getIPLocation(state.ipAddress);
                     const timeAgo = getTimeSinceJoin(state.joinTime);
-                    addMessageToChat(`${escapeHtml(state.userName)} joined ${timeAgo} ago from ${location}.`, 'system-message');
+                    addMessageToChat(`${escapeHtml(state.userName)} joined ${timeAgo} ago.`, 'system-message');
                     if (state.profile) {
                         addMessageToChat(`Says ${escapeHtml(state.userName)}, "${escapeHtml(state.profile)}"`, 'system-message');
                     }
                 } else {
-                    addMessageToChat(`User "${escapeHtml(targetName)}" not found. (In a real chat, this would show other users!)`, 'system-message');
+                    addMessageToChat(`User "${escapeHtml(targetName)}" not found. Whois is local and can only see yourself.`, 'system-message');
                 }
             } else {
                 addMessageToChat('Usage: /whois [nickname]', 'system-message');
             }
-            break;
-        case 'echo':
-            if (args) {
-                const { date, time } = getCurrentTimestamp();
-                const parsedMessage = parseMarkdown(args);
-                const emojiClass = isEmojiOnly(args) ? ' big-emoji' : '';
-                const html = `
-                    <span class="timestamp">[${date}]</span>
-                    <span class="message-content${emojiClass}">${parsedMessage}</span>
-                    <span class="timestamp">[${time}]</span>
-                `;
-                addMessageToChat(html, 'user-message', true);
-            } else {
-                addMessageToChat('Usage: /echo [message]', 'system-message');
-            }
-            break;
-        case 'roll':
-            const sides = args ? parseInt(args) : 6;
-            if (isNaN(sides) || sides < 2) {
-                addMessageToChat('Usage: /roll [sides] (default: 6)', 'system-message');
-            } else {
-                handleBroadcastCommand('roll', args);
-            }
-            break;
-        case 'flip':
-            handleBroadcastCommand('flip', args);
             break;
         case '8ball':
             const responses = [
@@ -410,9 +374,7 @@ function handleCommand(input) {
                 addMessageToChat('--- Recent History ---', 'system-message');
                 state.messageHistory.forEach(msg => {
                     const p = document.createElement('p');
-                    if (msg.className) {
-                        p.className = msg.className;
-                    }
+                    if (msg.className) p.className = msg.className;
                     p.innerHTML = msg.content;
                     chatOutput.appendChild(p);
                 });
@@ -426,7 +388,7 @@ function handleCommand(input) {
             addMessageToChat('Chat cleared.', 'system-message');
             break;
         default:
-            addMessageToChat(`Unknown command: /${command}. Type /help for available commands.`, 'system-message');
+            addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
     }
 }
@@ -548,68 +510,87 @@ async function handleBroadcastCommand(command, args) {
     }
 }
 
+const LOCAL_COMMANDS = [
+    'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
+    'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
+    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home'
+];
+
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const message = chatInput.value.trim();
-    if (message) {
-        // Handle local commands first
-        if (message.startsWith('/') && (
-            message.startsWith('/help') || message.startsWith('/clear') || message.startsWith('/home') ||
-            message.startsWith('/review') || message.startsWith('/nightmode') || message.startsWith('/darkmode') ||
-            message.startsWith('/time') || message.startsWith('/12') || message.startsWith('/24') ||
-            message.startsWith('/whoami') || message.startsWith('/whois') || message.startsWith('/profile') ||
-            message.startsWith('/uptime') || message.startsWith('/version') || message.startsWith('/about') ||
-            message.startsWith('/hercules') || message.startsWith('/retroled') || message.startsWith('/crt') ||
-            message.startsWith('/8ball') || message.startsWith('/fortune')
-        )) {
-            handleCommand(message);
-        } else if (message.startsWith('/')) {
-            // Server-side commands
-            await handleCommand(message);
-        } else if (message === '?') {
-            handleCommand('/help');
-        } else if (message === '~' || message === '/home') {
-            handleCommand('/clear');
-        } else if (message === '/') {
-            handleCommand('/review');
-        } else if (message.startsWith(':') && message.length > 1) {
-            await handleEmote(message.slice(1).trim());
-        } else if (message.startsWith('%') && message.length > 1) {
-            // Echo is special, it's a broadcast but formatted differently
-            const sessionId = getSessionId();
-            if (!sessionId) {
-                addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-            } else {
-                const echoText = message.slice(1).trim();
-                if (echoText) {
-                    const { date, time } = getCurrentTimestamp();
-                    const parsedMessage = parseMarkdown(echoText);
-                    const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
-                    const html = `
-                        <span class="timestamp">[${date}]</span>
-                        <span class="message-content${emojiClass}">${parsedMessage}</span>
-                        <span class="timestamp">[${time}]</span>
-                    `;
-                    await serverApi.sendMessage(sessionId, html);
-                }
-            }
-        } else if (message.startsWith('.') && message.length > 1) {
-            handleCommand(`/name ${message.slice(1).trim()}`);
-        } else if (message === '.') {
-            handleCommand('/name');
-        } else if (message.startsWith('@') && message.length > 1) {
-            const suffix = message.slice(1).trim();
-            if (suffix) {
-                state.userName = state.userName + suffix;
-                saveSettings();
-                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-            }
-        } else if (message === '@') {
-            handleCommand('/whoami');
-        } else {
-            await handleMessage(message);
+    const input = chatInput.value.trim();
+    if (!input) return;
+    chatInput.value = '';
+
+    // Handle shortcuts and special cases first
+    if (input.startsWith(':') && input.length > 1) {
+        await handleEmote(input.slice(1).trim());
+        return;
+    }
+    if (input.startsWith('%')) {
+        const echoText = input.slice(1).trim();
+        if (!echoText) return;
+        const { date, time } = getCurrentTimestamp();
+        const parsedMessage = parseMarkdown(echoText);
+        const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
+        const html = `
+            <span class="timestamp">[${date}]</span>
+            <span class="message-content${emojiClass}">${parsedMessage}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+        await serverApi.sendMessage(getSessionId(), html);
+        return;
+    }
+    if (input.startsWith('.') && input.length > 1) {
+        handleLocalCommand(`/name ${input.slice(1).trim()}`);
+        return;
+    }
+    if (input.startsWith('@') && input.length > 1) {
+        const suffix = input.slice(1).trim();
+        if (suffix) {
+            state.userName += suffix;
+            saveSettings();
+            addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
         }
-        chatInput.value = '';
+        return;
+    }
+
+    const shortcuts = {
+        '?': '/help',
+        '~': '/clear',
+        '/': '/review',
+        '.': '/name',
+        '@': '/whoami'
+    };
+
+    const commandInput = shortcuts[input] || input;
+
+    if (commandInput.startsWith('/')) {
+        const parts = commandInput.slice(1).split(' ');
+        const command = parts[0].toLowerCase();
+        const args = parts.slice(1).join(' ');
+
+        if (LOCAL_COMMANDS.includes(command)) {
+            handleLocalCommand(commandInput);
+        } else if (['me', 'em', 'emote'].includes(command)) {
+            await handleEmote(args);
+        } else if (['roll', 'flip'].includes(command)) {
+            await handleBroadcastCommand(command, args);
+        } else if (command === 'echo') {
+            const { date, time } = getCurrentTimestamp();
+            const parsedMessage = parseMarkdown(args);
+            const emojiClass = isEmojiOnly(args) ? ' big-emoji' : '';
+            const html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="message-content${emojiClass}">${parsedMessage}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            await serverApi.sendMessage(getSessionId(), html);
+        } else {
+            addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
+        }
+    } else {
+        await handleMessage(commandInput);
     }
 });
 
@@ -627,7 +608,8 @@ async function initializeApp() {
     try {
         await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
-        connectWebSocket(); // Establish WebSocket connection
+        // Pass the message handler function as a callback to avoid race conditions
+        connectWebSocket(displayBroadcastMessage);
         addMessageToChat('Type /help for a list of commands.', 'system-message');
     } catch (error) {
         addMessageToChat(`Connection failed: ${error.message}. Please refresh to try again.`, 'error-message');
