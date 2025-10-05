@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const sessionId = data.session_id;
 
             if (sessionId) {
-                window.location.href = `https://www.gameship.online/info/RetroTerm/?sID=${sessionId}`;
+                window.location.href = `https://www.gameship.online/info/vsms/RetroTerm/?sID=${sessionId}`;
             } else {
                 throw new Error('Session ID not received.');
             }
