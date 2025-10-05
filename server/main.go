@@ -147,6 +147,30 @@ func main() {
 		http.Redirect(w, r, "/auth/", http.StatusFound)
 	})
 
+// --- Serve RetroTerm page under multiple aliases ---
+retroTermDir := http.Dir("../client/public/RetroTerm")
+
+aliases := []string{"/rt/", "/chat/", "/RetroTerm/", "/retroTerm/", "/term/", "/terminal/"}
+for _, alias := range aliases {
+    r.PathPrefix(alias).Handler(http.StripPrefix(alias, http.FileServer(retroTermDir)))
+}
+
+// --- Redirect non-trailing-slash URLs to trailing-slash versions ---
+redirects := map[string]string{
+    "/rt":        "/rt/",
+    "/chat":      "/chat/",
+    "/RetroTerm": "/RetroTerm/",
+    "/retroTerm": "/retroTerm/",
+    "/term":      "/term/",
+    "/terminal":  "/terminal/",
+}
+
+for from, to := range redirects {
+    r.HandleFunc(from, func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, to, http.StatusFound)
+    })
+}
+
 	// --- API Routes ---
 	api := r.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/auth/request", requestTokenHandler).Methods("POST")
@@ -202,7 +226,13 @@ func requestTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ipAddress := r.RemoteAddr
+	ipAddress := r.Header.Get("X-Real-IP")
+if ipAddress == "" {
+    ipAddress = r.Header.Get("X-Forwarded-For")
+}
+if ipAddress == "" {
+    ipAddress = r.RemoteAddr
+}
 	stmt, err := db.Prepare("INSERT INTO auth_tokens(user_name_hash, token, ip_address, created_at) VALUES(?, ?, ?, ?)")
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
@@ -299,7 +329,15 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "SessionID and message are required", http.StatusBadRequest)
 		return
 	}
-	msg.IPAddress = r.RemoteAddr
+
+	ipAddress := r.Header.Get("X-Real-IP")
+if ipAddress == "" {
+    ipAddress = r.Header.Get("X-Forwarded-For")
+}
+if ipAddress == "" {
+    ipAddress = r.RemoteAddr
+}
+msg.IPAddress = ipAddress
 
 	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
 	if err != nil {
