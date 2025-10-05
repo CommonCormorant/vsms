@@ -51,7 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => {
             console.log(`Simulating authentication for name: "${name}" with token: "${token}"`);
             // Redirect to the RetroTerm page
-            window.location.href = 'https://www.gameship.online/info/RetroTerm';
+            window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm';
         }, 500);
     });
 });
