@@ -17,28 +17,36 @@
             requestBtn.disabled = true;
             requestBtn.textContent = 'Requesting...';
 
-            // TODO: Replace with actual API call
-            // const response = await fetch('/api/request-token', {
-            //     method: 'POST',
-            //     headers: { 'Content-Type': 'application/json' },
-            //     body: JSON.stringify({ name })
-            // });
-            // const data = await response.json();
-            // const token = data.token;
+            try {
+                const response = await fetch('/api/auth/request', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
 
-            // Simulated token generation for now
-            setTimeout(() => {
-                const token = generateMockToken();
-                generatedLink = `https://vsms.gameship.online/?token=${token}`;
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(errorText || 'Failed to request token');
+                }
+
+                const data = await response.json();
+                const token = data.token;
+
+                generatedLink = `https://vsms.gameship.online/auth2/?token=${token}`;
                 
                 tokenDisplay.textContent = generatedLink;
                 tokenDisplay.classList.remove('empty');
                 linkSection.classList.add('active');
                 copyBtn.disabled = false;
-                
+                usernameInput.disabled = true; // Lock the input field
+
+            } catch (error) {
+                console.error('Error requesting token:', error);
+                alert(`An error occurred: ${error.message}`);
+            } finally {
                 requestBtn.disabled = false;
                 requestBtn.textContent = 'Request Token';
-            }, 500);
+            }
         });
 
         copyBtn.addEventListener('click', () => {
@@ -50,12 +58,3 @@
                 }, 2000);
             });
         });
-
-        function generateMockToken() {
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            let token = '';
-            for (let i = 0; i < 64; i++) {
-                token += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            return token;
-        }
