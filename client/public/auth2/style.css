@@ -74,6 +74,12 @@
             border-color: #667eea;
         }
 
+        input#token {
+            background: #f8f9fa;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+
         button {
             width: 100%;
             padding: 12px;
