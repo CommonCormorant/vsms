@@ -21,13 +21,17 @@ let state = {
     userName: 'guest',
     ipAddress: '',
     theme: 'light',
-    startTime: Date.now()
+    startTime: Date.now(),
+    joinTime: Date.now(),
+    profile: ''
 };
 
 function saveSettings() {
     const settings = {
         userName: state.userName,
-        theme: state.theme
+        theme: state.theme,
+        profile: state.profile,
+        joinTime: state.joinTime
     };
     localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(settings));
 }
@@ -38,6 +42,8 @@ function loadSettings() {
         const settings = JSON.parse(saved);
         state.userName = settings.userName || 'guest';
         state.theme = settings.theme || 'light';
+        state.profile = settings.profile || '';
+        state.joinTime = settings.joinTime || Date.now();
         body.dataset.theme = state.theme;
     }
 }
@@ -63,6 +69,25 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function getIPLocation(ip) {
+    // Generate a fun fake location based on IP
+    const cities = ['Tokyo', 'Paris', 'New York', 'London', 'Sydney', 'Berlin', 
+                    'Toronto', 'Mumbai', 'São Paulo', 'Singapore', 'Amsterdam', 
+                    'Dubai', 'Hong Kong', 'Moscow', 'Cairo'];
+    const sum = ip.split('.').reduce((a, b) => parseInt(a) + parseInt(b), 0);
+    return cities[sum % cities.length];
+}
+
+function getTimeSinceJoin(joinTime) {
+    const diff = Date.now() - joinTime;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days} day${days !== 1 ? 's' : ''}`;
+    if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''}`;
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+}
 function parseMarkdown(text) {
     let html = escapeHtml(text);
     
@@ -224,6 +249,49 @@ function handleCommand(input) {
         case 'whoami':
             addMessageToChat(`You are ${escapeHtml(state.userName)} [${state.ipAddress}]`, 'system-message');
             break;
+        case 'me':
+        case 'emote':
+        case 'em':
+            if (args) {
+                const { date, time } = getCurrentTimestamp();
+                const html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${escapeHtml(args)}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+                addMessageToChat(html, 'user-message');
+            } else {
+                addMessageToChat('Usage: /me [action]', 'system-message');
+            }
+            break;
+        case 'profile':
+            if (args) {
+                state.profile = args;
+                saveSettings();
+                addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
+            } else if (state.profile) {
+                addMessageToChat(`Your profile: ${escapeHtml(state.profile)}`, 'system-message');
+            } else {
+                addMessageToChat('No profile set. Usage: /profile [your bio]', 'system-message');
+            }
+            break;
+        case 'whois':
+            if (args) {
+                const targetName = args.trim();
+                if (targetName.toLowerCase() === state.userName.toLowerCase()) {
+                    const location = getIPLocation(state.ipAddress);
+                    const timeAgo = getTimeSinceJoin(state.joinTime);
+                    addMessageToChat(`${escapeHtml(state.userName)} joined ${timeAgo} ago from ${location}.`, 'system-message');
+                    if (state.profile) {
+                        addMessageToChat(`Says ${escapeHtml(state.userName)}, "${escapeHtml(state.profile)}"`, 'system-message');
+                    }
+                } else {
+                    addMessageToChat(`User "${escapeHtml(targetName)}" not found. (In a real chat, this would show other users!)`, 'system-message');
+                }
+            } else {
+                addMessageToChat('Usage: /whois [nickname]', 'system-message');
+            }
+            break;
         case 'echo':
             if (args) {
                 addMessageToChat(escapeHtml(args), 'system-message');
@@ -300,9 +368,12 @@ function handleCommand(input) {
 function showHelp() {
     addMessageToChat(`Available commands:
         <br>/name [new_name] - Change your nickname (leave empty for random).
+        <br>/profile [bio] - Set your profile bio (leave empty to view).
+        <br>/whoami - Display your current user info.
+        <br>/whois [nickname] - Look up a user's info.
+        <br>/me [action] - Roleplay emote (/emote, /em also work).
         <br>/nightmode - Toggle dark/light theme.
         <br>/time - Display current date and time.
-        <br>/whoami - Display your current user info.
         <br>/echo [message] - Echo a message.
         <br>/roll [sides] - Roll a dice (default: 6 sides).
         <br>/flip - Flip a coin.

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" sizes="16x16" href="https://www.gameship.online/info/favicon-16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="https://www.gameship.online/info/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="48x48" href="https://www.gameship.online/info/favicon-48.png">
+    <link rel="shortcut icon" href="https://www.gameship.online/info/favicon.ico">
+    <title>GameShip.online - vsms Authentication</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h3>GameShip.online</h3>
+        <div class="subtitle">vsms Authentication Part 1</div>
+
+        <div class="instructions">
+            <strong>Do not forget the name you provided.</strong><br>
+            Use the link below and input the name exactly as you typed it here to authenticate. Share with friends. They'll also need the exact name you used here.
+        </div>
+
+        <div class="form-group">
+            <label for="username">Name</label>
+            <input type="text" id="username" placeholder="Enter your name">
+        </div>
+
+        <button class="btn-primary" id="requestBtn">Request Token</button>
+
+        <div class="link-display" id="linkSection">
+            <label>Your Authentication Link</label>
+            <div class="token-display" id="tokenDisplay">Token will appear here...</div>
+            <button class="btn-secondary" id="copyBtn" disabled>Copy Link to Clipboard</button>
+        </div>
+    </div>
+  <script src="script.js"></script>
+</body>
+</html>
