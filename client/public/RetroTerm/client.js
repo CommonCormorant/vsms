@@ -89,35 +89,9 @@ async function initializeSession(userName) {
         return;
     }
 
-    // 3. If no session, start auth flow
-    console.log(`No session found. Authenticating as ${userName}...`);
-    try {
-        // Step 1: Request a token
-        const authResponse = await serverApi.requestToken(userName);
-        const { token } = authResponse;
-        if (!token) {
-            throw new Error('No token received from server.');
-        }
-        console.log('Token received.');
-
-        // Step 2: Verify the token to get a session ID
-        const verifyResponse = await serverApi.verifyToken(userName, token);
-        const { session_id } = verifyResponse;
-        if (!session_id) {
-            throw new Error('No session_id received from server.');
-        }
-        console.log('Session ID received:', session_id);
-
-        // 3. Save the new session
-        session.id = session_id;
-        localStorage.setItem(session.SESSION_STORAGE_KEY, JSON.stringify({ id: session.id }));
-        console.log('Session saved to localStorage.');
-
-    } catch (error) {
-        console.error('Authentication failed:', error);
-        // Handle auth failure, maybe show an error to the user
-        addMessageToChat(`Authentication failed: ${error.message}. Please refresh the page to try again.`, 'error-message');
-    }
+    // 3. If no session, redirect
+    console.log('No session found. Redirecting...');
+    window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
 }
 
 function getSessionId() {
