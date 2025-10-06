@@ -179,7 +179,7 @@
                 }
             }
         }
-        
+
         function clearCanvas() {
             canvasData = Array(canvasHeight).fill(null).map(() => Array(canvasWidth).fill(EMPTY_EMOJI));
             updateCanvasUI();
@@ -187,7 +187,7 @@
 
         function handleCellInteraction(x, y) {
             if (x < 0 || x >= canvasWidth || y < 0 || y >= canvasHeight) return;
-            
+
             let emojiToApply;
             if (currentTool === 'brush') {
                 emojiToApply = selectedEmoji;
@@ -209,7 +209,7 @@
             if (!replacementEmoji || canvasData[y][x] !== targetEmoji || targetEmoji === replacementEmoji) {
                 return;
             }
-            
+
             canvasData[y][x] = replacementEmoji;
 
             floodFill(x + 1, y, targetEmoji, replacementEmoji);
@@ -284,7 +284,7 @@
         customEmojiInputEl.addEventListener('input', (e) => {
             updatePreview(e.target.value.trim());
         });
-        
+
         customEmojiPreviewEl.addEventListener('click', () => {
              // Re-select the emoji in the preview, useful if tool was changed
              updatePreview(customEmojiPreviewEl.textContent);
@@ -293,7 +293,7 @@
         toolBtns.forEach(btn => {
             btn.addEventListener('click', () => selectTool(btn.dataset.tool));
         });
-        
+
         document.addEventListener('mouseup', () => {
             isMouseDown = false;
         });

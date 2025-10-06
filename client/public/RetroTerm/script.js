@@ -658,7 +658,7 @@ function loadArtWidget() {
     if (isArtWidgetLoaded) return;
 
     const iframe = document.createElement('iframe');
-    iframe.src = '../emojiPaint/EmojiPaint.html';
+    iframe.src = 'EmojiPaint.html';
     iframe.style.width = '100%';
     iframe.style.height = '100%';
     iframe.style.border = 'none';
