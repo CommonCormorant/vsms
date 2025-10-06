@@ -410,8 +410,8 @@ body {
     position: absolute;
     bottom: 75px;
     left: 10px;
-    width: 420px;
-    height: 580px;
+    width: 380px;
+    height: 600px;
     background: var(--container-bg);
     border: 1px solid var(--input-border);
     border-radius: 12px;
