@@ -131,8 +131,17 @@ function connectWebSocket(onMessageCallback) {
         addMessageToChat('WebSocket connection error. Real-time updates may not work.', 'error-message');
     };
 
-    ws.onclose = () => {
-        console.log('WebSocket disconnected.');
-        addMessageToChat('Real-time connection lost. Please refresh the page to reconnect.', 'error-message');
+    ws.onclose = (event) => {
+        console.log(`WebSocket disconnected: Code=${event.code}, Reason=${event.reason}`);
+        let errorMessage = 'Real-time connection lost.';
+        if (event.code) {
+            errorMessage += ` (Code: ${event.code}`;
+            if (event.reason) {
+                errorMessage += `, Reason: ${event.reason}`;
+            }
+            errorMessage += ')';
+        }
+        errorMessage += ' Please refresh the page to reconnect.';
+        addMessageToChat(errorMessage, 'error-message');
     };
 }
