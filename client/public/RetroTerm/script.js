@@ -423,19 +423,9 @@ async function handleMessage(message) {
         return;
     }
 
-    const { date, time } = getCurrentTimestamp();
-    const parsedMessage = parseMarkdown(message);
-    const emojiClass = isEmojiOnly(message) ? ' big-emoji' : '';
-
-    const html = `
-        <span class="timestamp">[${date}]</span>
-        <span class="user-name">${escapeHtml(state.userName)}:</span>
-        <span class="message-content${emojiClass}">${parsedMessage}</span>
-        <span class="timestamp">[${time}]</span>
-    `;
-
+    // Send PLAIN TEXT to server
     try {
-        await serverApi.sendMessage(sessionId, html);
+        await serverApi.sendMessage(sessionId, message);
     } catch (error) {
         console.error('Failed to send message:', error);
         addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
@@ -449,16 +439,11 @@ async function handleEmote(action) {
         return;
     }
 
-    const { date, time } = getCurrentTimestamp();
-    const parsedAction = parseMarkdown(action);
-    const html = `
-        <span class="timestamp">[${date}]</span>
-        <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(state.userName)} ${parsedAction}</span>
-        <span class="timestamp">[${time}]</span>
-    `;
+    // Send plain text with command prefix
+    const emoteMessage = `/me ${action}`;
 
     try {
-        await serverApi.sendMessage(sessionId, html);
+        await serverApi.sendMessage(sessionId, emoteMessage);
     } catch (error) {
         console.error('Failed to send emote:', error);
         addMessageToChat(`Error sending emote: ${error.message}`, 'error-message');
@@ -472,36 +457,25 @@ async function handleBroadcastCommand(command, args) {
         return false;
     }
 
-    let html = '';
-    const { date, time } = getCurrentTimestamp();
+    let plainMessage = '';
 
     switch (command) {
         case 'roll':
             const sides = args ? parseInt(args) : 6;
             if (isNaN(sides) || sides < 2) return false;
             const result = Math.floor(Math.random() * sides) + 1;
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="user-name">${escapeHtml(state.userName)}:</span>
-                <span class="message-content">🎲 Rolled a d${sides}: ${result}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
+            plainMessage = `/roll d${sides} ${result}`;
             break;
         case 'flip':
             const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="user-name">${escapeHtml(state.userName)}:</span>
-                <span class="message-content">🪙 Coin flip: ${coin}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
+            plainMessage = `/flip ${coin}`;
             break;
         default:
             return false;
     }
 
     try {
-        await serverApi.sendMessage(sessionId, html);
+        await serverApi.sendMessage(sessionId, plainMessage);
         return true;
     } catch (error) {
         console.error(`Failed to send ${command}:`, error);
@@ -522,25 +496,20 @@ chatForm.addEventListener('submit', async (e) => {
     if (!input) return;
     chatInput.value = '';
 
-    // Handle shortcuts and special cases first
+    // Handle shortcuts that map to server commands
     if (input.startsWith(':') && input.length > 1) {
         await handleEmote(input.slice(1).trim());
         return;
     }
     if (input.startsWith('%')) {
         const echoText = input.slice(1).trim();
-        if (!echoText) return;
-        const { date, time } = getCurrentTimestamp();
-        const parsedMessage = parseMarkdown(echoText);
-        const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
-        const html = `
-            <span class="timestamp">[${date}]</span>
-            <span class="message-content${emojiClass}">${parsedMessage}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
-        await serverApi.sendMessage(getSessionId(), html);
+        if (echoText) {
+            await serverApi.sendMessage(getSessionId(), `/echo ${echoText}`);
+        }
         return;
     }
+
+    // Handle shortcuts that map to local commands
     if (input.startsWith('.') && input.length > 1) {
         handleLocalCommand(`/name ${input.slice(1).trim()}`);
         return;
@@ -577,15 +546,7 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (['roll', 'flip'].includes(command)) {
             await handleBroadcastCommand(command, args);
         } else if (command === 'echo') {
-            const { date, time } = getCurrentTimestamp();
-            const parsedMessage = parseMarkdown(args);
-            const emojiClass = isEmojiOnly(args) ? ' big-emoji' : '';
-            const html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="message-content${emojiClass}">${parsedMessage}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            await serverApi.sendMessage(getSessionId(), html);
+            await serverApi.sendMessage(getSessionId(), commandInput);
         } else {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
         }
@@ -594,10 +555,62 @@ chatForm.addEventListener('submit', async (e) => {
     }
 });
 
-function displayBroadcastMessage(htmlContent) {
-    // This function is called by the WebSocket handler in client.js
-    // It receives the pre-formatted HTML message from the server
-    addMessageToChat(htmlContent, 'user-message', true);
+function displayBroadcastMessage(data) {
+    const { date, time } = getCurrentTimestamp();
+    // Correctly handle the case-sensitive payload from the Go server's JSON tags.
+    const { session_id, message } = data;
+    let html = '';
+
+    const displayName = session_id === getSessionId() ? state.userName : `User-${session_id.substring(0, 8)}`;
+
+    if (message.startsWith('/me ')) {
+        const action = message.substring(4);
+        const parsedAction = parseMarkdown(action);
+        html = `
+            <span class="timestamp">[${date}]</span>
+            <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(displayName)} ${parsedAction}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+    } else if (message.startsWith('/roll ')) {
+        const parts = message.split(' '); // e.g., /roll d20 15
+        const dice = parts[1];
+        const result = parts[2];
+        html = `
+            <span class="timestamp">[${date}]</span>
+            <span class="user-name">${escapeHtml(displayName)}:</span>
+            <span class="message-content">🎲 Rolled a ${dice}: ${result}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+    } else if (message.startsWith('/flip ')) {
+        const result = message.substring(6);
+        html = `
+            <span class="timestamp">[${date}]</span>
+            <span class="user-name">${escapeHtml(displayName)}:</span>
+            <span class="message-content">🪙 Coin flip: ${result}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+    } else if (message.startsWith('/echo ')) {
+        const echoText = message.substring(6);
+        const parsedMessage = parseMarkdown(echoText);
+        const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
+        html = `
+            <span class="timestamp">[${date}]</span>
+            <span class="message-content${emojiClass}">${parsedMessage}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+    } else {
+        // Regular message
+        const parsedMessage = parseMarkdown(message);
+        const emojiClass = isEmojiOnly(message) ? ' big-emoji' : '';
+        html = `
+            <span class="timestamp">[${date}]</span>
+            <span class="user-name">${escapeHtml(displayName)}:</span>
+            <span class="message-content${emojiClass}">${parsedMessage}</span>
+            <span class="timestamp">[${time}]</span>
+        `;
+    }
+
+    addMessageToChat(html, 'user-message', true);
 }
 
 async function initializeApp() {

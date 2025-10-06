@@ -117,12 +117,12 @@ function connectWebSocket(onMessageCallback) {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            if (data.message) {
-                onMessageCallback(data.message);
-            }
+            // The server broadcasts a JSON object. We pass the whole object to the callback.
+            onMessageCallback(data);
         } catch (error) {
             console.error('Error parsing WebSocket message:', error);
-            onMessageCallback(event.data);
+            // If the data is not valid JSON, we cannot process it as a structured message.
+            console.log('Received non-JSON message from WebSocket:', event.data);
         }
     };
 
