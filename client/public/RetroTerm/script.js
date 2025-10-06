@@ -374,7 +374,12 @@ function handleLocalCommand(input) {
             showHelp();
             break;
         case 'review':
-            const count = parseInt(args, 10) || 12;
+            let count;
+            if (args.toLowerCase() === 'all') {
+                count = state.messageHistory.length;
+            } else {
+                count = parseInt(args, 10) || 12;
+            }
             const historyToShow = state.messageHistory.slice(-count);
             if (historyToShow.length === 0) {
                 addMessageToChat('No recent messages to review.', 'system-message');
@@ -546,6 +551,22 @@ async function handleHistoryCommand(args) {
     }
 }
 
+async function handleArchiveCommand() {
+    addMessageToChat(`Fetching full message archive...`, 'system-message');
+    try {
+        const history = await serverApi.getArchive(getSessionId());
+        if (history && history.length > 0) {
+            addMessageToChat('--- Start of Archive ---', 'system-message');
+            history.forEach(displayBroadcastMessage);
+            addMessageToChat('--- End of Archive ---', 'system-message');
+        } else {
+            addMessageToChat('No archive found for this session.', 'system-message');
+        }
+    } catch (error) {
+        addMessageToChat(`Error fetching archive: ${error.message}`, 'error-message');
+    }
+}
+
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = chatInput.value.trim();
@@ -587,7 +608,8 @@ chatForm.addEventListener('submit', async (e) => {
         '/': '/review',
         '.': '/name',
         '@': '/whoami',
-        '+': '/invite'
+        '+': '/invite',
+        '🧚🏼‍♀️': '/archive'
     };
 
     const commandInput = shortcuts[input] || input;
@@ -601,6 +623,8 @@ chatForm.addEventListener('submit', async (e) => {
             handleLocalCommand(commandInput);
         } else if (command === 'history' || command === 'h') {
             await handleHistoryCommand(args);
+        } else if (command === 'archive') {
+            await handleArchiveCommand();
         } else if (['me', 'em', 'emote'].includes(command)) {
             await handleEmote(args);
         } else if (['roll', 'flip'].includes(command)) {

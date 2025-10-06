@@ -44,6 +44,17 @@ const serverApi = {
             throw new Error(`History request failed: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    async getArchive(session_id) {
+        const response = await fetch(`/api/archive?sID=${session_id}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        if (!response.ok) {
+            throw new Error(`Archive request failed: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 

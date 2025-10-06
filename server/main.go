@@ -181,6 +181,7 @@ for from, to := range redirects {
 		chatMessageHandler(hub, w, r)
 	}).Methods("POST")
 	api.HandleFunc("/history", historyHandler).Methods("GET")
+	api.HandleFunc("/archive", archiveHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -351,6 +352,39 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	timeLimit := time.Now().Add(-time.Duration(minutes) * time.Minute)
 
 	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND created_at >= ? ORDER BY created_at ASC", sessionID, timeLimit)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []ChatMessage
+	for rows.Next() {
+		var msg ChatMessage
+		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {
+			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
+}
+
+func archiveHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		http.Error(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC", sessionID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
