@@ -334,3 +334,76 @@ body {
     height: 100%;
     object-fit: cover;
 }
+
+#reaction-button {
+    border: none;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    height: 100%;
+    max-height: 48px;
+    aspect-ratio: 2 / 3;
+    overflow: hidden;
+    border-radius: 8px;
+    transition: opacity 0.2s ease;
+    position: relative;
+    font-size: 24px;
+    color: var(--text-color);
+    border: 1px solid var(--input-border);
+}
+
+#reaction-button:hover {
+    opacity: 0.8;
+}
+
+#reaction-button:active {
+    transform: scale(0.98);
+}
+
+#reaction-button .smiley {
+    position: absolute;
+    top: 15%;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+#reaction-button .heart {
+    position: absolute;
+    bottom: 15%;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #ff0000;
+}
+
+#reaction-widget {
+    position: absolute;
+    bottom: 80px; /* Adjust as needed */
+    left: 70px; /* Adjust as needed */
+    background: var(--container-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 10px;
+    padding: 8px;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+}
+
+#reaction-widget.hidden {
+    display: none;
+}
+
+#reaction-widget button {
+    background: transparent;
+    border: none;
+    font-size: 24px;
+    padding: 5px;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: background-color 0.2s ease;
+}
+
+#reaction-widget button:hover {
+    background-color: var(--input-bg);
+}

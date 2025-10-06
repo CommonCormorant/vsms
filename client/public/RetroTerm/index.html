@@ -13,9 +13,16 @@
 <body data-theme="light">
     <div id="app-container">
         <div id="chat-output"></div>
+        <div id="reaction-widget" class="hidden">
+             <!-- Reactions will be populated by script.js -->
+        </div>
         <form id="chat-form">
             <button type="button" id="image-button" aria-label="Send image">
                 <img src="../images/img_upload.png" alt="Send image">
+            </button>
+            <button type="button" id="reaction-button" aria-label="Send reaction">
+                <span class="smiley">☺</span>
+                <span class="heart">♥</span>
             </button>
             <input type="text" id="chat-input" placeholder="Type a message or /command..." autocomplete="off" autofocus>
             <button type="submit" id="send-button">➤ Send</button>

@@ -16,6 +16,8 @@ const chatOutput = document.getElementById('chat-output');
 const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
 const body = document.body;
+const reactionButton = document.getElementById('reaction-button');
+const reactionWidget = document.getElementById('reaction-widget');
 
 let state = {
     userName: 'guest',
@@ -593,6 +595,52 @@ chatForm.addEventListener('submit', async (e) => {
     }
 });
 
+const REACTIONS = [
+    { emoji: '❤️', description: 'love / affection' },
+    { emoji: '😊', description: 'happiness / approval' },
+    { emoji: '😂', description: 'amusement / shared laughter' },
+    { emoji: '😞', description: 'sadness / sympathy' },
+    { emoji: '😳', description: 'surprise / shock / embarrassment' },
+    { emoji: '😠', description: 'anger / disapproval' },
+    { emoji: '😒', description: 'disgust / disdain' },
+    { emoji: '😨', description: 'fear / anxiety' },
+    { emoji: '👍🏻', description: 'approval / agreement' },
+    { emoji: '👎', description: 'disapproval / disagreement' },
+    { emoji: '🎉', description: 'celebration / excitement' }
+];
+
+function populateReactionWidget() {
+    reactionWidget.innerHTML = '';
+    REACTIONS.forEach(({ emoji, description }) => {
+        const button = document.createElement('button');
+        button.textContent = emoji;
+        button.title = description;
+        button.setAttribute('aria-label', description);
+        reactionWidget.appendChild(button);
+    });
+}
+
+reactionButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    reactionWidget.classList.toggle('hidden');
+});
+
+reactionWidget.addEventListener('click', async (event) => {
+    if (event.target.tagName === 'BUTTON') {
+        const emoji = event.target.textContent;
+        await handleMessage(emoji);
+        reactionWidget.classList.add('hidden');
+    }
+});
+
+document.addEventListener('click', (event) => {
+    if (!reactionWidget.classList.contains('hidden')) {
+        if (!reactionWidget.contains(event.target) && event.target !== reactionButton) {
+            reactionWidget.classList.add('hidden');
+        }
+    }
+});
+
 function displayBroadcastMessage(data) {
     const { date, time } = getCurrentTimestamp();
     const { message } = data;
@@ -663,6 +711,7 @@ function displayBroadcastMessage(data) {
 
 async function initializeApp() {
     loadSettings();
+    populateReactionWidget();
     addMessageToChat('Welcome to RetroTerm.', 'system-message');
     addMessageToChat('Connecting to server...', 'system-message');
 
