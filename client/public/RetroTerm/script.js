@@ -436,10 +436,9 @@ async function handleMessage(message) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
         return;
     }
-
-    // Send PLAIN TEXT to server
+    const prefixedMessage = `MSG|${state.userName}|${message}`;
     try {
-        await serverApi.sendMessage(sessionId, message);
+        await serverApi.sendMessage(sessionId, prefixedMessage);
     } catch (error) {
         console.error('Failed to send message:', error);
         addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
@@ -452,10 +451,7 @@ async function handleEmote(action) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
         return;
     }
-
-    // Send plain text with command prefix
-    const emoteMessage = `/me ${action}`;
-
+    const emoteMessage = `EMOTE|${state.userName}|${action}`;
     try {
         await serverApi.sendMessage(sessionId, emoteMessage);
     } catch (error) {
@@ -471,25 +467,25 @@ async function handleBroadcastCommand(command, args) {
         return false;
     }
 
-    let plainMessage = '';
+    let prefixedMessage = '';
 
     switch (command) {
         case 'roll':
             const sides = args ? parseInt(args) : 6;
             if (isNaN(sides) || sides < 2) return false;
             const result = Math.floor(Math.random() * sides) + 1;
-            plainMessage = `/roll d${sides} ${result}`;
+            prefixedMessage = `ROLL|${state.userName}|d${sides} ${result}`;
             break;
         case 'flip':
             const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            plainMessage = `/flip ${coin}`;
+            prefixedMessage = `FLIP|${state.userName}|${coin}`;
             break;
         default:
             return false;
     }
 
     try {
-        await serverApi.sendMessage(sessionId, plainMessage);
+        await serverApi.sendMessage(sessionId, prefixedMessage);
         return true;
     } catch (error) {
         console.error(`Failed to send ${command}:`, error);
@@ -541,7 +537,8 @@ chatForm.addEventListener('submit', async (e) => {
     if (input.startsWith('%')) {
         const echoText = input.slice(1).trim();
         if (echoText) {
-            await serverApi.sendMessage(getSessionId(), `/echo ${echoText}`);
+            const prefixedMessage = `ECHO||${echoText}`;
+            await serverApi.sendMessage(getSessionId(), prefixedMessage);
         }
         return;
     }
@@ -586,7 +583,8 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (['roll', 'flip'].includes(command)) {
             await handleBroadcastCommand(command, args);
         } else if (command === 'echo') {
-            await serverApi.sendMessage(getSessionId(), commandInput);
+            const prefixedMessage = `ECHO||${args}`;
+            await serverApi.sendMessage(getSessionId(), prefixedMessage);
         } else {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
         }
@@ -597,57 +595,67 @@ chatForm.addEventListener('submit', async (e) => {
 
 function displayBroadcastMessage(data) {
     const { date, time } = getCurrentTimestamp();
-    // Correctly handle the case-sensitive payload from the Go server's JSON tags.
-    const { session_id, message } = data;
+    const { message } = data;
     let html = '';
 
-    const displayName = session_id === getSessionId() ? state.userName : `User-${session_id.substring(0, 8)}`;
+    const parts = message.split('|');
+    const type = parts[0];
+    const nickname = parts[1];
+    const content = parts.slice(2).join('|');
 
-    if (message.startsWith('/me ')) {
-        const action = message.substring(4);
-        const parsedAction = parseMarkdown(action);
-        html = `
-            <span class="timestamp">[${date}]</span>
-            <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(displayName)} ${parsedAction}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
-    } else if (message.startsWith('/roll ')) {
-        const parts = message.split(' '); // e.g., /roll d20 15
-        const dice = parts[1];
-        const result = parts[2];
-        html = `
-            <span class="timestamp">[${date}]</span>
-            <span class="user-name">${escapeHtml(displayName)}:</span>
-            <span class="message-content">🎲 Rolled a ${dice}: ${result}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
-    } else if (message.startsWith('/flip ')) {
-        const result = message.substring(6);
-        html = `
-            <span class="timestamp">[${date}]</span>
-            <span class="user-name">${escapeHtml(displayName)}:</span>
-            <span class="message-content">🪙 Coin flip: ${result}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
-    } else if (message.startsWith('/echo ')) {
-        const echoText = message.substring(6);
-        const parsedMessage = parseMarkdown(echoText);
-        const emojiClass = isEmojiOnly(echoText) ? ' big-emoji' : '';
-        html = `
-            <span class="timestamp">[${date}]</span>
-            <span class="message-content${emojiClass}">${parsedMessage}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
-    } else {
-        // Regular message
-        const parsedMessage = parseMarkdown(message);
-        const emojiClass = isEmojiOnly(message) ? ' big-emoji' : '';
-        html = `
-            <span class="timestamp">[${date}]</span>
-            <span class="user-name">${escapeHtml(displayName)}:</span>
-            <span class="message-content${emojiClass}">${parsedMessage}</span>
-            <span class="timestamp">[${time}]</span>
-        `;
+    switch (type) {
+        case 'MSG':
+            const parsedMessage = parseMarkdown(content);
+            const emojiClass = isEmojiOnly(content) ? ' big-emoji' : '';
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <span class="message-content${emojiClass}">${parsedMessage}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'EMOTE':
+            const parsedAction = parseMarkdown(content);
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(nickname)} ${parsedAction}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'ROLL':
+            const [dice, result] = content.split(' ');
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <span class="message-content">🎲 Rolled a ${dice}: ${result}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'FLIP':
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <span class="message-content">🪙 Coin flip: ${content}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'ECHO':
+            const parsedEcho = parseMarkdown(content);
+            const echoEmojiClass = isEmojiOnly(content) ? ' big-emoji' : '';
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="message-content${echoEmojiClass}">${parsedEcho}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        default:
+            // Fallback for any message that doesn't match the format
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="message-content">${escapeHtml(message)}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
     }
 
     addMessageToChat(html, 'user-message', true);
