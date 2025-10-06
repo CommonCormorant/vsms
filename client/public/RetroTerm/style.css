@@ -368,12 +368,16 @@ body {
     transform: translate(-60%, -50%); /* Nudge left and up */
 }
 
-#reaction-button .heart {
+#reaction-button .heart-icon {
     position: absolute;
     bottom: 25%;
     left: 50%;
     transform: translate(-40%, 50%); /* Nudge right and down */
-    color: #ff0000;
+    width: 24px;
+    height: 24px;
+    background-color: currentColor;
+    -webkit-mask: url('../images/heart.svg') no-repeat center;
+    mask: url('../images/heart.svg') no-repeat center;
 }
 
 #reaction-widget {
