@@ -518,18 +518,29 @@ func handleKill9Request(hub *Hub, sessionID string) {
 	log.Printf("Kill request count for session %s is now %d.", sessionID, tracker.Count)
 
 	if tracker.Count >= 2 {
-		log.Printf("Second valid kill request for session %s. Deleting.", sessionID)
+		log.Printf("Second valid kill request for session %s. Attempting to delete.", sessionID)
 		delete(hub.killRequests, sessionID)
 
-		go func() {
-			_, err := db.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
-			if err != nil {
-				log.Printf("Failed to delete session %s: %v", sessionID, err)
-			} else {
-				log.Printf("Successfully deleted session %s.", sessionID)
-			}
-		}()
+		result, err := db.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("Failed to execute delete for session %s: %v", sessionID, err)
+			return // Do not broadcast if delete fails
+		}
 
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			log.Printf("Failed to get rows affected for session %s: %v", sessionID, err)
+			return // Do not broadcast if we can't confirm deletion
+		}
+
+		if rowsAffected == 0 {
+			log.Printf("Session %s not found in database for deletion.", sessionID)
+			return // Do not broadcast if no session was deleted
+		}
+
+		log.Printf("Successfully deleted session %s from database. Rows affected: %d", sessionID, rowsAffected)
+
+		// Broadcast kill success message to all clients in the session
 		successMsg := "KILL9_SUCCESS||"
 		jsonMsg, err := json.Marshal(ChatMessage{
 			SessionID: sessionID,

@@ -797,6 +797,18 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${time}]</span>
             `;
             break;
+        case 'KILL9_SUCCESS':
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="system-message">SERVER: Session has been terminated by user request. Disconnecting.</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            addMessageToChat(html, 'system-message', false);
+            deleteCookie('sID');
+            setTimeout(() => {
+                window.location.href = 'https://vsms.gameship.online/';
+            }, 3000);
+            return; // Stop further processing
         default:
             // Fallback for any message that doesn't match the format
             html = `
