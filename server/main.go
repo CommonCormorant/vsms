@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,9 +39,10 @@ type VerifyResponse struct {
 }
 
 type ChatMessage struct {
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
-	IPAddress string `json:"-"` // Ignored in JSON responses
+	SessionID string    `json:"session_id"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	IPAddress string    `json:"-"` // Ignored in JSON responses
 }
 
 // --- WebSocket ---
@@ -178,6 +180,7 @@ for from, to := range redirects {
 	api.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
 		chatMessageHandler(hub, w, r)
 	}).Methods("POST")
+	api.HandleFunc("/history", historyHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -319,6 +322,60 @@ func verifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func historyHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		http.Error(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	minutesStr := r.URL.Query().Get("minutes")
+	if minutesStr == "" {
+		minutesStr = "15" // Default to 15 minutes
+	}
+
+	minutes, err := strconv.Atoi(minutesStr)
+	if err != nil {
+		http.Error(w, "Invalid minutes parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Clamp minutes between 1 and 90
+	if minutes < 1 {
+		minutes = 1
+	}
+	if minutes > 90 {
+		minutes = 90
+	}
+
+	timeLimit := time.Now().Add(-time.Duration(minutes) * time.Minute)
+
+	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND created_at >= ? ORDER BY created_at ASC", sessionID, timeLimit)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []ChatMessage
+	for rows.Next() {
+		var msg ChatMessage
+		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {
+			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
+}
+
 func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	var msg ChatMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
@@ -331,13 +388,14 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	ipAddress := r.Header.Get("X-Real-IP")
-if ipAddress == "" {
-    ipAddress = r.Header.Get("X-Forwarded-For")
-}
-if ipAddress == "" {
-    ipAddress = r.RemoteAddr
-}
-msg.IPAddress = ipAddress
+	if ipAddress == "" {
+		ipAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if ipAddress == "" {
+		ipAddress = r.RemoteAddr
+	}
+	msg.IPAddress = ipAddress
+	msg.Timestamp = time.Now()
 
 	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
 	if err != nil {
@@ -345,7 +403,7 @@ msg.IPAddress = ipAddress
 		return
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(msg.SessionID, msg.Message, msg.IPAddress, time.Now())
+	_, err = stmt.Exec(msg.SessionID, msg.Message, msg.IPAddress, msg.Timestamp)
 	if err != nil {
 		http.Error(w, "Failed to save message", http.StatusInternalServerError)
 		return

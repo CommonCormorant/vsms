@@ -53,6 +53,10 @@ const session = {
 };
 
 async function initializeSession(userName) {
+    // This function will return `true` if the user is joining via a shared link,
+    // so the app knows to fetch the history automatically.
+    let isNewJoiner = false;
+
     // 1. Check for session ID in the URL first
     const urlParams = new URLSearchParams(window.location.search);
     const sID = urlParams.get('sID');
@@ -62,7 +66,8 @@ async function initializeSession(userName) {
         console.log('Session loaded from URL (sID):', session.id);
         // Clean the URL
         window.history.replaceState({}, document.title, window.location.pathname);
-        return;
+        isNewJoiner = true; // This user joined via a link
+        return isNewJoiner;
     }
 
     // 2. Try to load session from localStorage

@@ -659,10 +659,15 @@ async function initializeApp() {
     addMessageToChat('Connecting to server...', 'system-message');
 
     try {
-        await initializeSession(state.userName);
+        const isNewJoiner = await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
         // Pass the message handler function as a callback to avoid race conditions
         connectWebSocket(displayBroadcastMessage);
+
+        if (isNewJoiner) {
+            await handleHistoryCommand();
+        }
+
         addMessageToChat('Type /help for a list of commands.', 'system-message');
     } catch (error) {
         addMessageToChat(`Connection failed: ${error.message}. Please refresh to try again.`, 'error-message');
