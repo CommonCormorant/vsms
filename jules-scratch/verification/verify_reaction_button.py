@@ -15,6 +15,10 @@ def run():
         # Go to the local HTML file with a cache-busting query parameter
         page.goto(f'file://{html_file_path}?v={time.time()}')
 
+        # Find the art button and check if it's visible
+        art_button = page.locator("#art-button")
+        expect(art_button).to_be_visible()
+
         # Find the reaction button and click it
         reaction_button = page.locator("#reaction-button")
         expect(reaction_button).to_be_visible()
@@ -26,7 +30,7 @@ def run():
         expect(reaction_widget).to_be_visible()
 
         # Take a screenshot
-        page.screenshot(path="jules-scratch/verification/reaction-widget-visible.png")
+        page.screenshot(path="jules-scratch/verification/final-buttons-visible.png")
 
         browser.close()
 

@@ -307,34 +307,7 @@ body {
     transform: scale(0.98);
 }
 
-#image-button {
-    border: none;
-    background: transparent;
-    padding: 0;
-    cursor: pointer;
-    flex-shrink: 0;
-    height: 100%;
-    max-height: 48px; /* Keeps it reasonable */
-    aspect-ratio: 2 / 3; /* Maintains your image ratio */
-    overflow: hidden;
-    border-radius: 8px;
-    transition: opacity 0.2s ease;
-}
-
-#image-button:hover {
-    opacity: 0.8;
-}
-
-#image-button:active {
-    transform: scale(0.98);
-}
-
-#image-button img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
+#art-button,
 #reaction-button {
     border: none;
     background: transparent;
@@ -353,12 +326,38 @@ body {
     border: 1px solid var(--input-border);
 }
 
+#art-button:hover,
 #reaction-button:hover {
     opacity: 0.8;
 }
 
+#art-button:active,
 #reaction-button:active {
     transform: scale(0.98);
+}
+
+#art-button .art-rect {
+    position: absolute;
+    font-size: 36px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-40%, -50%); /* Nudged right */
+}
+
+#art-button .art-circle {
+    position: absolute;
+    font-size: 20px;
+    top: 35%;
+    left: 50%;
+    transform: translate(-70%, -50%); /* Nudged left and up */
+}
+
+#art-button .art-triangle {
+    position: absolute;
+    font-size: 14px;
+    top: 70%;
+    left: 50%;
+    transform: translate(-80%, -50%); /* Pushed left and down */
 }
 
 #reaction-button .smiley {
@@ -368,16 +367,11 @@ body {
     transform: translate(-60%, -50%); /* Nudge left and up */
 }
 
-#reaction-button .heart-icon {
+#reaction-button .heart {
     position: absolute;
     bottom: 25%;
     left: 50%;
     transform: translate(-40%, 50%); /* Nudge right and down */
-    width: 24px;
-    height: 24px;
-    background-color: currentColor;
-    -webkit-mask: url('../images/heart.svg') no-repeat center;
-    mask: url('../images/heart.svg') no-repeat center;
 }
 
 #reaction-widget {
