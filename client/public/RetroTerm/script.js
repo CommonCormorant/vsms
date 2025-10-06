@@ -368,11 +368,13 @@ function handleLocalCommand(input) {
             showHelp();
             break;
         case 'review':
-            if (state.messageHistory.length === 0) {
+            const count = parseInt(args, 10) || 12;
+            const historyToShow = state.messageHistory.slice(-count);
+            if (historyToShow.length === 0) {
                 addMessageToChat('No recent messages to review.', 'system-message');
             } else {
-                addMessageToChat('--- Recent History ---', 'system-message');
-                state.messageHistory.forEach(msg => {
+                addMessageToChat(`--- Last ${historyToShow.length} Messages ---`, 'system-message');
+                historyToShow.forEach(msg => {
                     const p = document.createElement('p');
                     if (msg.className) p.className = msg.className;
                     p.innerHTML = msg.content;
@@ -387,6 +389,16 @@ function handleLocalCommand(input) {
             chatOutput.innerHTML = '';
             addMessageToChat('Chat cleared.', 'system-message');
             break;
+        case 'invite':
+        case 'i':
+            const sessionId = getSessionId();
+            if (sessionId) {
+                const inviteLink = `${window.location.origin}/rt/?sID=${sessionId}`;
+                addMessageToChat(`Share this link to invite others: <a href="${inviteLink}" target="_blank">${inviteLink}</a>`, 'system-message');
+            } else {
+                addMessageToChat('Cannot generate invite link. No active session.', 'error-message');
+            }
+            break;
         default:
             addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
@@ -400,7 +412,9 @@ function showHelp() {
         <br>/whoami - Display your current user info.
         <br>/whois [nickname] - Look up a user's info.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
-        <br>/review - Show last 12 messages (/ also works).
+        <br>/invite - Get a shareable link to this chat session (/i, + also work).
+        <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).
+        <br>/review [count] - Show local history (default: 12). (/ also works).
         <br>/nightmode - Toggle dark/light theme.
         <br>/time - Display current date and time.
         <br>/12 or /24 - Toggle 12/24 hour time format.
@@ -487,8 +501,31 @@ async function handleBroadcastCommand(command, args) {
 const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
     'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
-    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home'
+    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i'
 ];
+
+async function handleHistoryCommand(args) {
+    let minutes = parseInt(args, 10);
+    if (isNaN(minutes)) {
+        minutes = 15; // Default to 15 minutes
+    }
+    // Clamp the value between 1 and 90
+    minutes = Math.max(1, Math.min(minutes, 90));
+
+    addMessageToChat(`Fetching history for the last ${minutes} minute(s)...`, 'system-message');
+    try {
+        const history = await serverApi.getHistory(getSessionId(), minutes);
+        if (history && history.length > 0) {
+            addMessageToChat('--- Start of History ---', 'system-message');
+            history.forEach(displayBroadcastMessage);
+            addMessageToChat('--- End of History ---', 'system-message');
+        } else {
+            addMessageToChat('No history found for this session.', 'system-message');
+        }
+    } catch (error) {
+        addMessageToChat(`Error fetching history: ${error.message}`, 'error-message');
+    }
+}
 
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -529,7 +566,8 @@ chatForm.addEventListener('submit', async (e) => {
         '~': '/clear',
         '/': '/review',
         '.': '/name',
-        '@': '/whoami'
+        '@': '/whoami',
+        '+': '/invite'
     };
 
     const commandInput = shortcuts[input] || input;
@@ -541,6 +579,8 @@ chatForm.addEventListener('submit', async (e) => {
 
         if (LOCAL_COMMANDS.includes(command)) {
             handleLocalCommand(commandInput);
+        } else if (command === 'history' || command === 'h') {
+            await handleHistoryCommand(args);
         } else if (['me', 'em', 'emote'].includes(command)) {
             await handleEmote(args);
         } else if (['roll', 'flip'].includes(command)) {

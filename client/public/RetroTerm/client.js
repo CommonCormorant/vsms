@@ -33,6 +33,17 @@ const serverApi = {
             throw new Error(`Send message failed: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    async getHistory(session_id, minutes = 15) {
+        const response = await fetch(`/api/history?sID=${session_id}&minutes=${minutes}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        if (!response.ok) {
+            throw new Error(`History request failed: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 
