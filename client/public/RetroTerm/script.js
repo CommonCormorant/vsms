@@ -68,19 +68,19 @@ function getCircledNumber(num) {
     return num.toString(); // Fallback for numbers outside range
 }
 
-function getCurrentTimestamp() {
-    const now = new Date();
+function getFormattedTimestamp(dateSource) {
+    const now = dateSource ? new Date(dateSource) : new Date();
     const month = getCircledNumber(now.getMonth() + 1);
     const day = getCircledNumber(now.getDate());
     const year = now.getFullYear();
-    
+
     // Convert year to two circled numbers (e.g., 2025 → ⑳㉕)
     const century = Math.floor(year / 100); // 20
     const yearPart = year % 100; // 25
     const yearCircled = `${getCircledNumber(century)}${getCircledNumber(yearPart)}`;
-    
+
     const date = `${month}/${day}/${yearCircled}`;
-    
+
     // Time format based on user preference
     let time;
     if (state.use24Hour) {
@@ -88,7 +88,7 @@ function getCurrentTimestamp() {
     } else {
         time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
     }
-    
+
     return { date, time };
 }
 
@@ -291,7 +291,7 @@ function handleLocalCommand(input) {
             }
             break;
         case 'time':
-            const { date, time } = getCurrentTimestamp();
+            const { date, time } = getFormattedTimestamp();
             addMessageToChat(`Current time: ${date} ${time}`, 'system-message');
             break;
         case '12':
@@ -685,7 +685,7 @@ document.addEventListener('click', (event) => {
 });
 
 function displayBroadcastMessage(data) {
-    const { date, time } = getCurrentTimestamp();
+    const { date, time } = getFormattedTimestamp(data.timestamp);
     const { message } = data;
     let html = '';
 
