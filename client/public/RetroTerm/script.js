@@ -573,6 +573,11 @@ chatForm.addEventListener('submit', async (e) => {
     if (!input) return;
     chatInput.value = '';
 
+    if (input === '🧚🏼‍♀️') {
+        await handleArchiveCommand();
+        return;
+    }
+
     // Handle shortcuts that map to server commands
     if (input.startsWith(':') && input.length > 1) {
         await handleEmote(input.slice(1).trim());
@@ -608,8 +613,7 @@ chatForm.addEventListener('submit', async (e) => {
         '/': '/review',
         '.': '/name',
         '@': '/whoami',
-        '+': '/invite',
-        '🧚🏼‍♀️': '/archive'
+        '+': '/invite'
     };
 
     const commandInput = shortcuts[input] || input;
@@ -623,8 +627,6 @@ chatForm.addEventListener('submit', async (e) => {
             handleLocalCommand(commandInput);
         } else if (command === 'history' || command === 'h') {
             await handleHistoryCommand(args);
-        } else if (command === 'archive') {
-            await handleArchiveCommand();
         } else if (['me', 'em', 'emote'].includes(command)) {
             await handleEmote(args);
         } else if (['roll', 'flip'].includes(command)) {
