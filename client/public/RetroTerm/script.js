@@ -57,6 +57,10 @@ function loadSettings() {
     }
 }
 
+function deleteCookie(name) {
+    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+}
+
 function getCircledNumber(num) {
     if (num >= 1 && num <= 20) {
         return String.fromCharCode(0x245F + num); // ① to ⑳
@@ -410,6 +414,13 @@ function handleLocalCommand(input) {
                 addMessageToChat('Cannot generate invite link. No active session.', 'error-message');
             }
             break;
+        case 'kill':
+            addMessageToChat('Disconnecting...', 'system-message');
+            deleteCookie('sID');
+            setTimeout(() => {
+                window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
+            }, 1000);
+            break;
         default:
             addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
@@ -525,7 +536,8 @@ async function handleBroadcastCommand(command, args) {
 const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
     'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
-    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i'
+    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i',
+    'kill'
 ];
 
 async function handleHistoryCommand(args) {
@@ -634,6 +646,16 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (command === 'echo') {
             const prefixedMessage = `ECHO||${args}`;
             await serverApi.sendMessage(getSessionId(), prefixedMessage);
+        } else if (command === 'kill' && args === '9') {
+            const sessionId = getSessionId();
+            if (!sessionId) {
+                addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+            } else {
+                const killMessage = `KILL9|${state.userName}|`;
+                // This uses the existing serverApi.sendMessage which posts to /api/chat
+                await serverApi.sendMessage(sessionId, killMessage);
+                addMessageToChat('Kill request sent to server...', 'system-message');
+            }
         } else {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
         }
@@ -776,6 +798,18 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${time}]</span>
             `;
             break;
+        case 'KILL9_SUCCESS':
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="system-message">SERVER: Session has been terminated by user request. Disconnecting.</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            addMessageToChat(html, 'system-message', false);
+            deleteCookie('sID');
+            setTimeout(() => {
+                window.location.href = 'https://vsms.gameship.online/';
+            }, 3000);
+            return; // Stop further processing
         default:
             // Fallback for any message that doesn't match the format
             html = `

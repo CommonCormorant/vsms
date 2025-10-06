@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 )
 
 // --- Structs ---
+
+type KillRequestTracker struct {
+	Count     int
+	Timestamp time.Time
+}
 
 type AuthRequestPayload struct {
 	Name string `json:"name"`
@@ -54,18 +60,22 @@ var upgrader = websocket.Upgrader{
 }
 
 type Hub struct {
-	clients    map[*Client]bool
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
+	clients           map[*Client]bool
+	clientsMutex      sync.Mutex
+	broadcast         chan []byte
+	register          chan *Client
+	unregister        chan *Client
+	killRequests      map[string]*KillRequestTracker
+	killRequestsMutex sync.Mutex
 }
 
 func newHub() *Hub {
 	return &Hub{
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		clients:    make(map[*Client]bool),
+		broadcast:    make(chan []byte),
+		register:     make(chan *Client),
+		unregister:   make(chan *Client),
+		clients:      make(map[*Client]bool),
+		killRequests: make(map[string]*KillRequestTracker),
 	}
 }
 
@@ -73,13 +83,18 @@ func (h *Hub) run() {
 	for {
 		select {
 		case client := <-h.register:
+			h.clientsMutex.Lock()
 			h.clients[client] = true
+			h.clientsMutex.Unlock()
 		case client := <-h.unregister:
+			h.clientsMutex.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
 				close(client.send)
 			}
+			h.clientsMutex.Unlock()
 		case message := <-h.broadcast:
+			h.clientsMutex.Lock()
 			for client := range h.clients {
 				select {
 				case client.send <- message:
@@ -88,14 +103,16 @@ func (h *Hub) run() {
 					delete(h.clients, client)
 				}
 			}
+			h.clientsMutex.Unlock()
 		}
 	}
 }
 
 type Client struct {
-	hub  *Hub
-	conn *websocket.Conn
-	send chan []byte
+	hub       *Hub
+	conn      *websocket.Conn
+	send      chan []byte
+	sessionID string
 }
 
 func (c *Client) readPump() {
@@ -421,6 +438,15 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle KILL9 command
+	parts := strings.Split(msg.Message, "|")
+	if len(parts) > 0 && parts[0] == "KILL9" {
+		handleKill9Request(hub, msg.SessionID)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "kill request received"})
+		return
+	}
+
 	ipAddress := r.Header.Get("X-Real-IP")
 	if ipAddress == "" {
 		ipAddress = r.Header.Get("X-Forwarded-For")
@@ -455,16 +481,81 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		log.Println("WebSocket connection rejected: no session ID")
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
+	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256), sessionID: sessionID}
 	client.hub.register <- client
 
 	go client.writePump()
 	go client.readPump()
+}
+
+func handleKill9Request(hub *Hub, sessionID string) {
+	hub.killRequestsMutex.Lock()
+	defer hub.killRequestsMutex.Unlock()
+
+	tracker, exists := hub.killRequests[sessionID]
+
+	if !exists || time.Since(tracker.Timestamp) > 12*time.Minute {
+		hub.killRequests[sessionID] = &KillRequestTracker{
+			Count:     1,
+			Timestamp: time.Now(),
+		}
+		log.Printf("First kill request for session %s or previous expired. Timer started.", sessionID)
+		return
+	}
+
+	tracker.Count++
+	log.Printf("Kill request count for session %s is now %d.", sessionID, tracker.Count)
+
+	if tracker.Count >= 2 {
+		log.Printf("Second valid kill request for session %s. Deleting.", sessionID)
+		delete(hub.killRequests, sessionID)
+
+		go func() {
+			_, err := db.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
+			if err != nil {
+				log.Printf("Failed to delete session %s: %v", sessionID, err)
+			} else {
+				log.Printf("Successfully deleted session %s.", sessionID)
+			}
+		}()
+
+		successMsg := "KILL9_SUCCESS||"
+		jsonMsg, err := json.Marshal(ChatMessage{
+			SessionID: sessionID,
+			Message:   successMsg,
+			Timestamp: time.Now(),
+		})
+		if err == nil {
+			hub.broadcastToSession(sessionID, jsonMsg)
+		}
+	}
+}
+
+func (h *Hub) broadcastToSession(sessionID string, message []byte) {
+	h.clientsMutex.Lock()
+	defer h.clientsMutex.Unlock()
+
+	for client := range h.clients {
+		if client.sessionID == sessionID {
+			select {
+			case client.send <- message:
+			default:
+				close(client.send)
+				delete(h.clients, client)
+			}
+		}
+	}
 }
 
 // --- Utility & Cleanup Functions ---
