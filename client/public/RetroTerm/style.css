@@ -339,17 +339,17 @@ body {
 #art-button .art-rect {
     position: absolute;
     font-size: 36px;
-    top: 50%;
+    top: 48%; /* Nudged up */
     left: 50%;
     transform: translate(-40%, -50%); /* Nudged right */
 }
 
 #art-button .art-circle {
     position: absolute;
-    font-size: 20px;
+    font-size: 22px; /* Slightly larger */
     top: 35%;
     left: 50%;
-    transform: translate(-70%, -50%); /* Nudged left and up */
+    transform: translate(-60%, -50%); /* Pushed right a bit */
 }
 
 #art-button .art-triangle {
