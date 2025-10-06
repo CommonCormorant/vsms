@@ -405,3 +405,33 @@ body {
 #reaction-widget button:hover {
     background-color: var(--input-bg);
 }
+
+#art-widget {
+    position: absolute;
+    bottom: 75px;
+    left: 10px;
+    width: 350px;
+    height: 420px;
+    background: var(--container-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 12px;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    z-index: 10;
+    padding: 10px;
+    overflow-y: auto;
+    overflow-x: auto;
+    resize: both;
+}
+
+#art-widget.hidden {
+    display: none;
+}
+
+.art-content {
+    font-family: var(--font-family-mono);
+    line-height: 1.1;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    white-space: pre-wrap;
+    word-break: break-all;
+}

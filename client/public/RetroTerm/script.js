@@ -18,6 +18,10 @@ const chatInput = document.getElementById('chat-input');
 const body = document.body;
 const reactionButton = document.getElementById('reaction-button');
 const reactionWidget = document.getElementById('reaction-widget');
+const artButton = document.getElementById('art-button');
+const artWidget = document.getElementById('art-widget');
+
+let isArtWidgetLoaded = false;
 
 let state = {
     userName: 'guest',
@@ -462,6 +466,23 @@ async function handleEmote(action) {
     }
 }
 
+async function handleArt(artContent) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return;
+    }
+    const artMessage = `ART|${state.userName}|${artContent}`;
+    try {
+        await serverApi.sendMessage(sessionId, artMessage);
+        artWidget.classList.add('hidden');
+    } catch (error) {
+        console.error('Failed to send art:', error);
+        addMessageToChat(`Error sending art: ${error.message}`, 'error-message');
+    }
+}
+window.sendArt = handleArt;
+
 async function handleBroadcastCommand(command, args) {
     const sessionId = getSessionId();
     if (!sessionId) {
@@ -633,11 +654,33 @@ reactionWidget.addEventListener('click', async (event) => {
     }
 });
 
+function loadArtWidget() {
+    if (isArtWidgetLoaded) return;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = '../emojiPaint/EmojiPaint.html';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.border = 'none';
+    artWidget.appendChild(iframe);
+    isArtWidgetLoaded = true;
+}
+
+artButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!isArtWidgetLoaded) {
+        loadArtWidget();
+    }
+    artWidget.classList.toggle('hidden');
+    reactionWidget.classList.add('hidden');
+});
+
 document.addEventListener('click', (event) => {
-    if (!reactionWidget.classList.contains('hidden')) {
-        if (!reactionWidget.contains(event.target) && event.target !== reactionButton) {
-            reactionWidget.classList.add('hidden');
-        }
+    if (!reactionWidget.classList.contains('hidden') && !reactionWidget.contains(event.target) && event.target !== reactionButton) {
+        reactionWidget.classList.add('hidden');
+    }
+    if (!artWidget.classList.contains('hidden') && !artWidget.contains(event.target) && event.target !== artButton) {
+        artWidget.classList.add('hidden');
     }
 });
 
@@ -693,6 +736,17 @@ function displayBroadcastMessage(data) {
             html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="message-content${echoEmojiClass}">${parsedEcho}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'ART':
+            const artContent = content.replace(/¶/g, '<br>');
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <div class="message-content">
+                    <div class="art-content">${artContent}</div>
+                </div>
                 <span class="timestamp">[${time}]</span>
             `;
             break;

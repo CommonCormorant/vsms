@@ -3,197 +3,103 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Emoji Art Program</title>
-<link rel="icon" type="image/x-icon" href="/favicon.ico">
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-<link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png">
+    <title>Emoji Art Widget</title>
     <style>
         body {
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
             color: white;
+            overflow: hidden;
         }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
+        .widget-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center;
         }
-        
-        h1 {
-            text-align: center;
-            margin-bottom: 30px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-        }
-        
-        .main-interface {
-            display: grid;
-            grid-template-columns: 300px 1fr;
-            gap: 20px;
-            background: rgba(255,255,255,0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 20px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }
-        
         .toolbar {
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 10px;
+            width: 100%;
         }
-        
         .tool-section {
             background: rgba(255,255,255,0.1);
             border-radius: 10px;
-            padding: 15px;
+            padding: 10px;
         }
-        
-        .tool-section h3 {
-            margin: 0 0 15px 0;
-            font-size: 16px;
-            text-align: center;
-        }
-        
         .tools {
             display: flex;
             gap: 10px;
             justify-content: center;
         }
-        
         .tool-btn {
-            padding: 10px;
+            padding: 8px;
             background: rgba(255,255,255,0.2);
             border: 2px solid transparent;
             border-radius: 8px;
             cursor: pointer;
-            transition: all 0.3s ease;
-            font-size: 20px;
+            font-size: 18px;
         }
-        
-        .tool-btn:hover {
-            background: rgba(255,255,255,0.3);
-            transform: translateY(-2px);
-        }
-        
         .tool-btn.active {
             border-color: #fff;
             background: rgba(255,255,255,0.4);
         }
-        
-        .emoji-palette {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 5px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        
-        .emoji-btn {
-            padding: 8px;
-            background: rgba(255,255,255,0.1);
-            border: 2px solid transparent;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-size: 20px;
-            text-align: center;
-        }
-        
-        .emoji-btn:hover {
-            background: rgba(255,255,255,0.2);
-            transform: scale(1.1);
-        }
-        
-        .emoji-btn.selected {
-            border-color: #fff;
-            background: rgba(255,255,255,0.3);
-        }
-        
-        .custom-emoji-section {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        
         .custom-emoji-input {
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        
         .custom-emoji-input input {
             flex: 1;
-            padding: 8px;
+            padding: 6px;
             border: none;
             border-radius: 6px;
             background: rgba(255,255,255,0.2);
             color: white;
-            font-size: 16px;
+            font-size: 14px;
         }
-        
-        .custom-emoji-input input::placeholder {
-            color: rgba(255,255,255,0.7);
-        }
-        
         .custom-emoji-preview {
-            width: 40px;
-            height: 40px;
+            width: 36px;
+            height: 36px;
             background: rgba(255,255,255,0.2);
             border: 2px solid transparent;
             border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 24px;
+            font-size: 20px;
             cursor: pointer;
-            transition: all 0.3s ease;
         }
-        
-        .custom-emoji-preview:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        
         .custom-emoji-preview.selected {
             border-color: #fff;
-            background: rgba(255,255,255,0.3);
         }
-        
         .canvas-container {
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 20px;
-        }
-        
-        .canvas-controls {
-            display: flex;
             gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
         }
-        
-        .canvas-controls label {
-            font-weight: bold;
-        }
-        
-        .canvas-controls input {
+        .canvas {
+            display: grid;
+            gap: 1px;
+            background: rgba(0,0,0,0.2);
             padding: 5px;
-            border: none;
             border-radius: 5px;
-            background: rgba(255,255,255,0.2);
-            color: white;
-            width: 60px;
-            text-align: center;
         }
-        
-        .canvas-controls input::placeholder {
-            color: rgba(255,255,255,0.7);
+        .canvas-cell {
+            width: 22px;
+            height: 22px;
+            background: rgba(255,255,255,0.8);
+            border: 1px solid rgba(0,0,0,0.1);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
         }
-        
         .btn {
             padding: 8px 16px;
             background: rgba(255,255,255,0.2);
@@ -201,323 +107,205 @@
             border-radius: 5px;
             color: white;
             cursor: pointer;
-            transition: all 0.3s ease;
         }
-        
-        .btn:hover {
-            background: rgba(255,255,255,0.3);
-            transform: translateY(-1px);
-        }
-        
-        .canvas {
-            display: grid;
-            gap: 1px;
-            background: rgba(0,0,0,0.2);
-            padding: 10px;
-            border-radius: 10px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-            background: rgba(255,255,255,0.1);
-        }
-        
-        .canvas-cell {
-            width: 25px;
-            height: 25px;
-            background: rgba(255,255,255,0.8);
-            border: 1px solid rgba(0,0,0,0.1);
-            cursor: pointer;
+        .actions {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            transition: background 0.2s ease;
-        }
-        
-        .canvas-cell:hover {
-            background: rgba(255,255,255,0.9);
-        }
-        
-        .output-section {
-            margin-top: 20px;
-            text-align: center;
-        }
-        
-        .output-area {
-            background: rgba(0,0,0,0.3);
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px 0;
-            font-family: 'Courier New', monospace;
-            white-space: pre-wrap;
-            max-height: 200px;
-            overflow-y: auto;
-            text-align: left;
-            color: #fff;
+            gap: 10px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🎨 Emoji Art Program</h1>
-        
-        <div class="main-interface">
-            <div class="toolbar">
-                <div class="tool-section">
-                    <h3>🛠️ Tools</h3>
-                    <div class="tools">
-                        <div class="tool-btn active" data-tool="brush" title="Brush Tool">🖌️</div>
-                        <div class="tool-btn" data-tool="fill" title="Fill Tool">🪣</div>
-                        <div class="tool-btn" data-tool="eraser" title="Eraser">🧽</div>
-                    </div>
-                </div>
-                
-                <div class="tool-section">
-                    <h3>🎨 Emoji Palette</h3>
-                    <div class="emoji-palette" id="emojiPalette">
-                        <!-- Emojis will be populated by JavaScript -->
-                    </div>
-                </div>
-                
-                <div class="tool-section">
-                    <h3>✨ Custom Emoji</h3>
-                    <div class="custom-emoji-section">
-                        <div class="custom-emoji-input">
-                            <input 
-                                type="text" 
-                                id="customEmojiInput" 
-                                placeholder="Type or paste emoji..."
-                                maxlength="10"
-                            >
-                            <div class="custom-emoji-preview" id="customEmojiPreview" title="Click to select custom emoji"></div>
-                        </div>
-                    </div>
+    <div class="widget-container">
+        <div class="toolbar">
+            <div class="tool-section">
+                <div class="tools">
+                    <div class="tool-btn" data-tool="brush" title="Brush Tool">🖌️</div>
+                    <div class="tool-btn" data-tool="fill" title="Fill Tool">🪣</div>
+                    <div class="tool-btn" data-tool="eraser" title="Eraser">🧽</div>
                 </div>
             </div>
-            
-            <div class="canvas-container">
-                <div class="canvas-controls">
-                    <label>Width:</label>
-                    <input type="number" id="canvasWidth" value="15" min="5" max="30">
-                    <label>Height:</label>
-                    <input type="number" id="canvasHeight" value="12" min="5" max="30">
-                    <button class="btn" onclick="createCanvas()">New Canvas</button>
-                    <button class="btn" onclick="clearCanvas()">Clear All</button>
+            <div class="tool-section">
+                <div class="custom-emoji-input">
+                    <input type="text" id="customEmojiInput" placeholder="Paste emoji..." maxlength="2">
+                    <div class="custom-emoji-preview" id="customEmojiPreview" title="Click to select custom emoji"></div>
                 </div>
-                
-                <div class="canvas" id="canvas">
-                    <!-- Canvas cells will be populated by JavaScript -->
-                </div>
-                
-                <div class="output-section">
-                    <button class="btn" onclick="exportArt()">📋 Copy to Clipboard</button>
-                    <div class="output-area" id="output"></div>
-                </div>
+            </div>
+        </div>
+        <div class="canvas-container">
+            <div class="canvas" id="canvas"></div>
+            <div class="actions">
+                <button class="btn" onclick="clearCanvas()">Clear</button>
+                <button class="btn" onclick="exportArt()">Send</button>
             </div>
         </div>
     </div>
 
     <script>
+        // --- DOM Elements ---
+        const canvasEl = document.getElementById('canvas');
+        const customEmojiInputEl = document.getElementById('customEmojiInput');
+        const customEmojiPreviewEl = document.getElementById('customEmojiPreview');
+        const toolBtns = document.querySelectorAll('.tool-btn');
+
+        // --- State ---
         let currentTool = 'brush';
         let selectedEmoji = '⬜';
         let canvasData = [];
-        let canvasWidth = 15;
-        let canvasHeight = 12;
+        const canvasWidth = 12;
+        const canvasHeight = 6;
         let isMouseDown = false;
-        let customEmoji = '';
-        
-        // Emoji collections
-        const emojis = [
-            '⬜', '🟥', '🟧', '🟩', '🟪', '🟫', '⬛', '🟦', '🟨',
-            '🔲', '🔳', '◼️', '▫️', '▪️', '◽', '⏹️', '◾', '❎',
-            '🔶', '🔷', '🔹', '🔸', '🔴', '🔵', '⚪', '⭕', '🟡', '🟠', '⚫', '🟣', '⏺️', '🟢', '🟤',
-            '💙', '💜', '💟', '🖤', '🧡', '🤍', '♥️', '❤️', '🤎',
-            '🌟', '⭐', '✨', '💫', '🌙', '☀️', '🌈', '🔥', '💎',
-            '🎯', '🎪', '🎨', '🖼️', '🏠', '🏢', '🚪', '🪟', '⛅'
-        ];
-        
-        function initializePalette() {
-            const palette = document.getElementById('emojiPalette');
-            emojis.forEach((emoji, index) => {
-                const btn = document.createElement('div');
-                btn.className = 'emoji-btn';
-                btn.textContent = emoji;
-                btn.onclick = () => selectEmoji(emoji, btn);
-                palette.appendChild(btn);
-                
-                // Select first emoji by default
-                if (index === 0) {
-                    btn.classList.add('selected');
+        const EMPTY_EMOJI = '⬜';
+
+        // --- Functions ---
+
+        function selectTool(tool) {
+            currentTool = tool;
+            toolBtns.forEach(btn => {
+                if (btn.dataset.tool === tool) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
                 }
             });
         }
+
+        function updateCanvasUI() {
+            for (let y = 0; y < canvasHeight; y++) {
+                for (let x = 0; x < canvasWidth; x++) {
+                    const cell = canvasEl.querySelector(`[data-x="${x}"][data-y="${y}"]`);
+                    if (cell) {
+                        cell.textContent = canvasData[y][x];
+                    }
+                }
+            }
+        }
         
-        function selectEmoji(emoji, element) {
-            selectedEmoji = emoji;
-            // Clear all selections
-            document.querySelectorAll('.emoji-btn').forEach(btn => btn.classList.remove('selected'));
-            document.getElementById('customEmojiPreview').classList.remove('selected');
+        function clearCanvas() {
+            canvasData = Array(canvasHeight).fill(null).map(() => Array(canvasWidth).fill(EMPTY_EMOJI));
+            updateCanvasUI();
+        }
+
+        function handleCellInteraction(x, y) {
+            if (x < 0 || x >= canvasWidth || y < 0 || y >= canvasHeight) return;
             
-            // Select the clicked element
-            if (element) {
-                element.classList.add('selected');
+            let emojiToApply;
+            if (currentTool === 'brush') {
+                emojiToApply = selectedEmoji;
+            } else if (currentTool === 'eraser') {
+                emojiToApply = EMPTY_EMOJI;
+            } else {
+                return; // Not a drawing tool
+            }
+
+            if (canvasData[y][x] !== emojiToApply) {
+                canvasData[y][x] = emojiToApply;
+                const cell = canvasEl.querySelector(`[data-x="${x}"][data-y="${y}"]`);
+                cell.textContent = emojiToApply;
             }
         }
-        
-        function selectCustomEmoji() {
-            if (customEmoji) {
-                selectedEmoji = customEmoji;
-                // Clear palette selections
-                document.querySelectorAll('.emoji-btn').forEach(btn => btn.classList.remove('selected'));
-                // Select custom preview
-                document.getElementById('customEmojiPreview').classList.add('selected');
+
+        function floodFill(x, y, targetEmoji, replacementEmoji) {
+            if (x < 0 || x >= canvasWidth || y < 0 || y >= canvasHeight) return;
+            if (!replacementEmoji || canvasData[y][x] !== targetEmoji || targetEmoji === replacementEmoji) {
+                return;
             }
+            
+            canvasData[y][x] = replacementEmoji;
+
+            floodFill(x + 1, y, targetEmoji, replacementEmoji);
+            floodFill(x - 1, y, targetEmoji, replacementEmoji);
+            floodFill(x, y + 1, targetEmoji, replacementEmoji);
+            floodFill(x, y - 1, targetEmoji, replacementEmoji);
         }
-        
-        function selectTool(tool) {
-            currentTool = tool;
-            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
-            document.querySelector(`[data-tool="${tool}"]`).classList.add('active');
-        }
-        
+
         function createCanvas() {
-            canvasWidth = parseInt(document.getElementById('canvasWidth').value);
-            canvasHeight = parseInt(document.getElementById('canvasHeight').value);
-            
-            const canvas = document.getElementById('canvas');
-            canvas.innerHTML = '';
-            canvas.style.gridTemplateColumns = `repeat(${canvasWidth}, 1fr)`;
-            
-            canvasData = Array(canvasHeight).fill(null).map(() => Array(canvasWidth).fill(''));
-            
+            canvasEl.innerHTML = '';
+            canvasEl.style.gridTemplateColumns = `repeat(${canvasWidth}, 1fr)`;
+
             for (let y = 0; y < canvasHeight; y++) {
                 for (let x = 0; x < canvasWidth; x++) {
                     const cell = document.createElement('div');
                     cell.className = 'canvas-cell';
                     cell.dataset.x = x;
                     cell.dataset.y = y;
-                    
+
                     cell.addEventListener('mousedown', (e) => {
                         e.preventDefault();
                         isMouseDown = true;
-                        handleCellClick(x, y);
-                    });
-                    
-                    cell.addEventListener('mouseenter', () => {
-                        if (isMouseDown && currentTool === 'brush') {
-                            handleCellClick(x, y);
+                        if (currentTool === 'fill') {
+                            const targetEmoji = canvasData[y][x];
+                            floodFill(x, y, targetEmoji, selectedEmoji);
+                            updateCanvasUI();
+                        } else {
+                            handleCellInteraction(x, y);
                         }
                     });
-                    
-                    canvas.appendChild(cell);
+
+                    cell.addEventListener('mouseenter', () => {
+                        if (isMouseDown) {
+                            handleCellInteraction(x, y);
+                        }
+                    });
+
+                    canvasEl.appendChild(cell);
                 }
             }
+            clearCanvas(); // Initialize canvas with empty data and UI
         }
-        
-        function handleCellClick(x, y) {
-            const cell = document.querySelector(`[data-x="${x}"][data-y="${y}"]`);
-            
-            if (currentTool === 'brush') {
-                canvasData[y][x] = selectedEmoji;
-                cell.textContent = selectedEmoji;
-            } else if (currentTool === 'eraser') {
-                canvasData[y][x] = '';
-                cell.textContent = '';
-            } else if (currentTool === 'fill') {
-                floodFill(x, y, canvasData[y][x], selectedEmoji);
-                updateCanvas();
-            }
-        }
-        
-        function floodFill(x, y, targetEmoji, replacementEmoji) {
-            if (x < 0 || x >= canvasWidth || y < 0 || y >= canvasHeight) return;
-            if (canvasData[y][x] !== targetEmoji || canvasData[y][x] === replacementEmoji) return;
-            
-            canvasData[y][x] = replacementEmoji;
-            
-            floodFill(x + 1, y, targetEmoji, replacementEmoji);
-            floodFill(x - 1, y, targetEmoji, replacementEmoji);
-            floodFill(x, y + 1, targetEmoji, replacementEmoji);
-            floodFill(x, y - 1, targetEmoji, replacementEmoji);
-        }
-        
-        function updateCanvas() {
-            for (let y = 0; y < canvasHeight; y++) {
-                for (let x = 0; x < canvasWidth; x++) {
-                    const cell = document.querySelector(`[data-x="${x}"][data-y="${y}"]`);
-                    cell.textContent = canvasData[y][x];
-                }
-            }
-        }
-        
-        function clearCanvas() {
-            canvasData = Array(canvasHeight).fill(null).map(() => Array(canvasWidth).fill(''));
-            updateCanvas();
-            document.getElementById('output').textContent = '';
-        }
-        
+
         function exportArt() {
             let output = '';
             for (let y = 0; y < canvasHeight; y++) {
-                for (let x = 0; x < canvasWidth; x++) {
-                    output += canvasData[y][x] || '⬜';
+                output += canvasData[y].join('');
+                if (y < canvasHeight - 1) {
+                    output += '¶';
                 }
-                output += '\n';
             }
-            
-            document.getElementById('output').textContent = output;
-            
-            // Copy to clipboard
-            navigator.clipboard.writeText(output).then(() => {
-                alert('Emoji art copied to clipboard! 🎉');
-            }).catch(err => {
-                console.error('Could not copy text: ', err);
-            });
+            if (window.parent && typeof window.parent.sendArt === 'function') {
+                window.parent.sendArt(output);
+            } else {
+                console.error('sendArt function not found on parent window.');
+                navigator.clipboard.writeText(output).then(() => console.log('Art copied to clipboard.'));
+            }
         }
-        
-        // Custom emoji input handling
-        document.getElementById('customEmojiInput').addEventListener('input', (e) => {
-            customEmoji = e.target.value.trim();
-            const preview = document.getElementById('customEmojiPreview');
-            preview.textContent = customEmoji || '';
-            
-            // Auto-select if there's content
-            if (customEmoji) {
-                selectCustomEmoji();
+
+        function updatePreview(emoji) {
+            selectedEmoji = emoji || EMPTY_EMOJI;
+            customEmojiPreviewEl.textContent = selectedEmoji;
+            if (selectedEmoji !== EMPTY_EMOJI) {
+                customEmojiPreviewEl.classList.add('selected');
+            } else {
+                customEmojiPreviewEl.classList.remove('selected');
             }
+        }
+
+        // --- Event Listeners & Initialization ---
+
+        customEmojiInputEl.addEventListener('input', (e) => {
+            updatePreview(e.target.value.trim());
         });
         
-        // Allow paste events
-        document.getElementById('customEmojiInput').addEventListener('paste', (e) => {
-            setTimeout(() => {
-                const input = e.target;
-                customEmoji = input.value.trim();
-                const preview = document.getElementById('customEmojiPreview');
-                preview.textContent = customEmoji || '';
-                
-                if (customEmoji) {
-                    selectCustomEmoji();
-                }
-            }, 10);
+        customEmojiPreviewEl.addEventListener('click', () => {
+             // Re-select the emoji in the preview, useful if tool was changed
+             updatePreview(customEmojiPreviewEl.textContent);
+        });
+
+        toolBtns.forEach(btn => {
+            btn.addEventListener('click', () => selectTool(btn.dataset.tool));
         });
         
-        // Click preview to select custom emoji
-        document.getElementById('customEmojiPreview').addEventListener('click', () => {
-            if (customEmoji) {
-                selectCustomEmoji();
-            }
-        });
-        
-        // Event listeners
         document.addEventListener('mouseup', () => {
             isMouseDown = false;
         });
-        
-        document.querySelectorAll('.tool-btn').forEach(btn => {
-            btn.onclick = () => selectTool(btn.dataset.tool);
-        });
-        
-        // Initialize the app
-        initializePalette();
-        createCanvas();
+
+        function initialize() {
+            createCanvas();
+            selectTool('brush');
+            updatePreview(EMPTY_EMOJI);
+        }
+
+        initialize();
+
     </script>
 </body>
 </html>
