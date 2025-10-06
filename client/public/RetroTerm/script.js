@@ -674,6 +674,7 @@ async function initializeApp() {
 
         if (isNewJoiner) {
             await handleHistoryCommand();
+            await handleEmote("has joined.");
         }
 
         addMessageToChat('Type /help for a list of commands.', 'system-message');
