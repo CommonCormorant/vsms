@@ -57,10 +57,6 @@ function loadSettings() {
     }
 }
 
-function deleteCookie(name) {
-    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-}
-
 function getCircledNumber(num) {
     if (num >= 1 && num <= 20) {
         return String.fromCharCode(0x245F + num); // ① to ⑳
@@ -537,7 +533,6 @@ async function handleHistoryCommand(args) {
     if (isNaN(minutes)) {
         minutes = 15; // Default to 15 minutes
     }
-    // Clamp the value between 1 and 90
     minutes = Math.max(1, Math.min(minutes, 90));
 
     addMessageToChat(`Fetching history for the last ${minutes} minute(s)...`, 'system-message');
@@ -582,7 +577,6 @@ chatForm.addEventListener('submit', async (e) => {
         return;
     }
 
-    // Handle shortcuts that map to server commands
     if (input.startsWith(':') && input.length > 1) {
         await handleEmote(input.slice(1).trim());
         return;
@@ -596,7 +590,6 @@ chatForm.addEventListener('submit', async (e) => {
         return;
     }
 
-    // Handle shortcuts that map to local commands
     if (input.startsWith('.') && input.length > 1) {
         handleLocalCommand(`/name ${input.slice(1).trim()}`);
         return;
@@ -641,7 +634,7 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (command === 'kill') {
             if (args === '') {
                 addMessageToChat('Disconnecting...', 'system-message');
-                deleteCookie('sID');
+                clearSessionData();
                 setTimeout(() => {
                     window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
                 }, 1000);
@@ -652,7 +645,6 @@ chatForm.addEventListener('submit', async (e) => {
                 } else {
                     const killMessage = `KILL9|${state.userName}|`;
                     await serverApi.sendMessage(sessionId, killMessage);
-                    addMessageToChat('Kill request sent to server...', 'system-message');
                 }
             }
         } else {
@@ -731,15 +723,39 @@ document.addEventListener('click', (event) => {
     }
 });
 
-function displayBroadcastMessage(data) {
-    const { date, time } = getFormattedTimestamp(data.timestamp);
-    const { message } = data;
-    let html = '';
+function startKillCountdown() {
+    let countdown = 30;
+    addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
 
+    const interval = setInterval(() => {
+        countdown -= 5;
+        if (countdown > 0) {
+            addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+        } else {
+            clearInterval(interval);
+            addMessageToChat('% Please create a valid session to continue chatting.', 'system-message');
+            clearSessionData();
+            setTimeout(() => {
+                window.location.href = 'https://vsms.gameship.online/';
+            }, 2000);
+        }
+    }, 5000);
+}
+
+function displayBroadcastMessage(data) {
+    const { message } = data;
     const parts = message.split('|');
     const type = parts[0];
+
+    if (type === 'KILL9_INITIATE_REDIRECT') {
+        startKillCountdown();
+        return;
+    }
+
+    const { date, time } = getFormattedTimestamp(data.timestamp);
     const nickname = parts[1];
     const content = parts.slice(2).join('|');
+    let html = '';
 
     switch (type) {
         case 'MSG':
@@ -797,20 +813,7 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${time}]</span>
             `;
             break;
-        case 'KILL9_SUCCESS':
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="system-message">SERVER: Session has been terminated by user request. Disconnecting.</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            addMessageToChat(html, 'system-message', false);
-            deleteCookie('sID');
-            setTimeout(() => {
-                window.location.href = 'https://vsms.gameship.online/';
-            }, 3000);
-            return; // Stop further processing
         default:
-            // Fallback for any message that doesn't match the format
             html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="message-content">${escapeHtml(message)}</span>
@@ -831,7 +834,6 @@ async function initializeApp() {
     try {
         const isNewJoiner = await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
-        // Pass the message handler function as a callback to avoid race conditions
         connectWebSocket(displayBroadcastMessage);
 
         if (isNewJoiner) {
@@ -841,7 +843,7 @@ async function initializeApp() {
 
         addMessageToChat('Type /help for a list of commands.', 'system-message');
     } catch (error) {
-        addMessageToChat(`Connection failed: ${error.message}. Please refresh to try again.`, 'error-message');
+        addMessageToChat(`Connection failed: ${error.message}`, 'error-message');
     }
 
     chatInput.focus();
