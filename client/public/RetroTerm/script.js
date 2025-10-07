@@ -725,15 +725,15 @@ document.addEventListener('click', (event) => {
 
 function startKillCountdown() {
     let countdown = 30;
-    addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+    addMessageToChat(`***Countdown to client close: ${countdown} Seconds***`, 'system-message');
 
     const interval = setInterval(() => {
         countdown -= 5;
         if (countdown > 0) {
-            addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+            addMessageToChat(`***Countdown to client close: ${countdown} Seconds***`, 'system-message');
         } else {
             clearInterval(interval);
-            addMessageToChat('% Please create a valid session to continue chatting.', 'system-message');
+            addMessageToChat('***SESSION DELETED*** :: Resetting clients.', 'system-message');
             clearSessionData();
             setTimeout(() => {
                 window.location.href = 'https://vsms.gameship.online/';

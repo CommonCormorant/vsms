@@ -558,13 +558,33 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 
 		time.Sleep(1 * time.Second)
 
-		// 2. Delete the session from the database within a transaction.
+		// 2. Archive and delete the session data within a single transaction.
 		tx, err := db.Begin()
 		if err != nil {
 			log.Printf("CRITICAL: Failed to begin transaction for session deletion %s: %v", sessionID, err)
 			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
+
+		// Step 2a: Copy messages to chat_archives
+		_, err = tx.Exec("INSERT INTO chat_archives SELECT * FROM chat_messages WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to archive messages for session %s: %v", sessionID, err)
+			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		// Step 2b: Delete messages from chat_messages
+		_, err = tx.Exec("DELETE FROM chat_messages WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to delete messages for session %s: %v", sessionID, err)
+			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		// Step 2c: Delete the session itself
 		result, err := tx.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
 		if err != nil {
 			log.Printf("CRITICAL: Failed to execute delete for session %s in transaction: %v", sessionID, err)
@@ -572,14 +592,16 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
+
 		if err := tx.Commit(); err != nil {
 			log.Printf("CRITICAL: Failed to commit transaction for session deletion %s: %v", sessionID, err)
 			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
+
 		rowsAffected, _ := result.RowsAffected()
 		if rowsAffected > 0 {
-			log.Printf("Successfully deleted session %s from database.", sessionID)
+			log.Printf("Successfully archived and deleted session %s from database.", sessionID)
 		} else {
 			log.Printf("Session %s was not found in database for deletion.", sessionID)
 		}
@@ -636,9 +658,8 @@ func wasSessionEverReal(sessionID string) bool {
 		return false
 	}
 	var id int
-	// Check if the session_id ever existed in chat_messages.
-	// This tells us if it was a real session that has since been deleted.
-	err := db.QueryRow("SELECT id FROM chat_messages WHERE session_id = ? LIMIT 1", sessionID).Scan(&id)
+	// Check if the session_id ever existed in chat_archives.
+	err := db.QueryRow("SELECT id FROM chat_archives WHERE session_id = ? LIMIT 1", sessionID).Scan(&id)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("Error checking past session existence for session %s: %v", sessionID, err)
