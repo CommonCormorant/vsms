@@ -57,10 +57,6 @@ function loadSettings() {
     }
 }
 
-function deleteCookie(name) {
-    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
-}
-
 function getCircledNumber(num) {
     if (num >= 1 && num <= 20) {
         return String.fromCharCode(0x245F + num); // ① to ⑳
@@ -78,14 +74,12 @@ function getFormattedTimestamp(dateSource) {
     const day = getCircledNumber(now.getDate());
     const year = now.getFullYear();
 
-    // Convert year to two circled numbers (e.g., 2025 → ⑳㉕)
-    const century = Math.floor(year / 100); // 20
-    const yearPart = year % 100; // 25
+    const century = Math.floor(year / 100);
+    const yearPart = year % 100;
     const yearCircled = `${getCircledNumber(century)}${getCircledNumber(yearPart)}`;
 
     const date = `${month}/${day}/${yearCircled}`;
 
-    // Time format based on user preference
     let time;
     if (state.use24Hour) {
         time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -106,48 +100,21 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-function getIPLocation(ip) {
-    // Generate a fun fake location based on IP
-    const cities = ['Tokyo', 'Paris', 'New York', 'London', 'Sydney', 'Berlin', 
-                    'Toronto', 'Mumbai', 'São Paulo', 'Singapore', 'Amsterdam', 
-                    'Dubai', 'Hong Kong', 'Moscow', 'Cairo'];
-    const sum = ip.split('.').reduce((a, b) => parseInt(a) + parseInt(b), 0);
-    return cities[sum % cities.length];
-}
-
-function getTimeSinceJoin(joinTime) {
-    const diff = Date.now() - joinTime;
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    
-    if (days > 0) return `${days} day${days !== 1 ? 's' : ''}`;
-    if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''}`;
-    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-}
 function parseMarkdown(text) {
     let html = escapeHtml(text);
-    
-    // Headers
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-    
-    // Horizontal rule (three underscores)
     html = html.replace(/^___$/gm, '<br/><hr/><br/>');
-    
-    // Blockquotes (including nested)
     const lines = html.split('\n');
     let inBlockquote = false;
     let blockquoteLevel = 0;
     let processedLines = [];
-    
     for (let line of lines) {
         const quoteMatch = line.match(/^(>+)\s?(.*)$/);
         if (quoteMatch) {
             const level = quoteMatch[1].length;
             const content = quoteMatch[2];
-            
             if (!inBlockquote || level !== blockquoteLevel) {
                 if (inBlockquote && level < blockquoteLevel) {
                     for (let i = 0; i < blockquoteLevel - level; i++) {
@@ -174,39 +141,29 @@ function parseMarkdown(text) {
             processedLines.push(line);
         }
     }
-    
     if (inBlockquote) {
         for (let i = 0; i < blockquoteLevel; i++) {
             processedLines.push('</blockquote>');
         }
     }
-    
     html = processedLines.join('\n');
-    
-    // Lists
     html = html.replace(/^\- (.+)$/gm, '<li>$1</li>');
     html = html.replace(/^  \- (.+)$/gm, '<ul><li>$1</li></ul>');
     html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
     html = html.replace(/<\/ul>\n?<ul>/g, '');
-    
-    // Inline formatting
     html = html.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
                .replace(/\*(.*?)\*/g, '<i>$1</i>')
                .replace(/_(.*?)_/g, '<u>$1</u>')
                .replace(/`(.*?)`/g, '<code>$1</code>');
-    
     return html;
 }
 
 function addMessageToChat(htmlContent, className = '', addToHistory = false) {
     const p = document.createElement('p');
-    if (className) {
-        p.className = className;
-    }
+    if (className) p.className = className;
     p.innerHTML = htmlContent;
     chatOutput.appendChild(p);
     scrollToBottom();
-    
     if (addToHistory) {
         state.messageHistory.push({ content: htmlContent, className: className });
         if (state.messageHistory.length > 12) {
@@ -215,12 +172,7 @@ function addMessageToChat(htmlContent, className = '', addToHistory = false) {
     }
 }
 
-function isRetroTheme() {
-    return ['dark', 'hercules-orange', 'hercules-green', 'retroled', 'crt', 'crt-light'].includes(state.theme);
-}
-
 function isEmojiOnly(text) {
-    // Check if text is a single emoji (or multiple emojis with no other characters)
     const emojiRegex = /^[\p{Emoji}\s]+$/u;
     const hasNonWhitespace = /\S/.test(text);
     const emojiCount = (text.match(/\p{Emoji}/gu) || []).length;
@@ -233,341 +185,18 @@ function handleLocalCommand(input) {
     const args = parts.slice(1).join(' ');
 
     switch (command) {
-        case 'name':
-        case 'nick':
-            if (args) {
-                state.userName = args;
-                saveSettings();
-                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-            } else {
-                const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
-                const nameIndex = Math.floor(Math.random() * 10);
-                state.userName = `${randomName}_${nameIndex}`;
-                saveSettings();
-                addMessageToChat(`You have been assigned a random name: ${escapeHtml(state.userName)}`, 'system-message');
-            }
-            break;
-        case 'nightmode':
-        case 'darkmode':
-            state.theme = state.theme === 'dark' ? 'light' : 'dark';
-            body.dataset.theme = state.theme;
-            saveSettings();
-            addMessageToChat(`Night mode ${state.theme === 'dark' ? 'enabled' : 'disabled'}.`, 'system-message');
-            break;
-        case 'hercules':
-            if (!isRetroTheme()) {
-                showHelp();
-            } else if (args === 'orange') {
-                state.theme = 'hercules-orange';
-                body.dataset.theme = state.theme;
-                saveSettings();
-                addMessageToChat('Hercules monitor mode: Orange', 'system-message');
-            } else if (args === 'green') {
-                state.theme = 'hercules-green';
-                body.dataset.theme = state.theme;
-                saveSettings();
-                addMessageToChat('Hercules monitor mode: Green', 'system-message');
-            } else {
-                addMessageToChat('Usage: /hercules orange | /hercules green', 'system-message');
-            }
-            break;
-        case 'retroled':
-            if (!isRetroTheme()) {
-                showHelp();
-            } else {
-                state.theme = 'retroled';
-                body.dataset.theme = state.theme;
-                saveSettings();
-                addMessageToChat('Retro LED mode: Red on black', 'system-message');
-            }
-            break;
-        case 'crt':
-            if (isRetroTheme()) {
-                state.theme = 'crt';
-                body.dataset.theme = state.theme;
-                saveSettings();
-                addMessageToChat('CRT TV mode: Blue-ish white on black', 'system-message');
-            } else {
-                state.theme = 'crt-light';
-                body.dataset.theme = state.theme;
-                saveSettings();
-                addMessageToChat('CRT TV mode: Black on blue-ish white', 'system-message');
-            }
-            break;
-        case 'time':
-            const { date, time } = getFormattedTimestamp();
-            addMessageToChat(`Current time: ${date} ${time}`, 'system-message');
-            break;
-        case '12':
-        case '24':
-            state.use24Hour = !state.use24Hour;
-            saveSettings();
-            addMessageToChat(`Time format switched to ${state.use24Hour ? '24-hour' : '12-hour'} mode.`, 'system-message');
-            break;
-        case 'whoami':
-            addMessageToChat(`You are ${escapeHtml(state.userName)}.`, 'system-message');
-            break;
-        case 'profile':
-            if (args) {
-                state.profile = args;
-                saveSettings();
-                addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
-            } else if (state.profile) {
-                addMessageToChat(`Your profile: ${escapeHtml(state.profile)}`, 'system-message');
-            } else {
-                addMessageToChat('No profile set. Usage: /profile [your bio]', 'system-message');
-            }
-            break;
-        case 'whois':
-            if (args) {
-                const targetName = args.trim();
-                if (targetName.toLowerCase() === state.userName.toLowerCase()) {
-                    const timeAgo = getTimeSinceJoin(state.joinTime);
-                    addMessageToChat(`${escapeHtml(state.userName)} joined ${timeAgo} ago.`, 'system-message');
-                    if (state.profile) {
-                        addMessageToChat(`Says ${escapeHtml(state.userName)}, "${escapeHtml(state.profile)}"`, 'system-message');
-                    }
-                } else {
-                    addMessageToChat(`User "${escapeHtml(targetName)}" not found. Whois is local and can only see yourself.`, 'system-message');
-                }
-            } else {
-                addMessageToChat('Usage: /whois [nickname]', 'system-message');
-            }
-            break;
-        case '8ball':
-            const responses = [
-                'It is certain.', 'Without a doubt.', 'Yes definitely.',
-                'You may rely on it.', 'As I see it, yes.', 'Most likely.',
-                'Outlook good.', 'Yes.', 'Signs point to yes.',
-                'Reply hazy, try again.', 'Ask again later.', 'Better not tell you now.',
-                'Cannot predict now.', 'Concentrate and ask again.',
-                "Don't count on it.", 'My reply is no.', 'My sources say no.',
-                'Outlook not so good.', 'Very doubtful.'
-            ];
-            const answer = responses[Math.floor(Math.random() * responses.length)];
-            addMessageToChat(`🔮 Magic 8-Ball says: ${answer}`, 'system-message');
-            break;
-        case 'fortune':
-            const fortunes = [
-                'A pleasant surprise is waiting for you.',
-                'Adventure awaits you in the near future.',
-                'Your hard work will soon pay off.',
-                'Good things come to those who wait.',
-                'A friend will bring you unexpected joy.',
-                'Trust your instincts today.',
-                'The answer you seek lies within.',
-                'New opportunities will knock on your door.'
-            ];
-            const fortune = fortunes[Math.floor(Math.random() * fortunes.length)];
-            addMessageToChat(`🥠 Fortune: ${fortune}`, 'system-message');
-            break;
-        case 'uptime':
-            const uptime = Date.now() - state.startTime;
-            const seconds = Math.floor(uptime / 1000);
-            const minutes = Math.floor(seconds / 60);
-            const hours = Math.floor(minutes / 60);
-            addMessageToChat(`Uptime: ${hours}h ${minutes % 60}m ${seconds % 60}s`, 'system-message');
-            break;
-        case 'version':
-            addMessageToChat('RetroTerm v2.0 - Enhanced Edition', 'system-message');
-            break;
-        case 'about':
-            addMessageToChat('RetroTerm: A nostalgic terminal chat interface with modern flair.', 'system-message');
-            break;
-        case 'help':
-            showHelp();
-            break;
-        case 'review':
-            let count;
-            if (args.toLowerCase() === 'all') {
-                count = state.messageHistory.length;
-            } else {
-                count = parseInt(args, 10) || 12;
-            }
-            const historyToShow = state.messageHistory.slice(-count);
-            if (historyToShow.length === 0) {
-                addMessageToChat('No recent messages to review.', 'system-message');
-            } else {
-                addMessageToChat(`--- Last ${historyToShow.length} Messages ---`, 'system-message');
-                historyToShow.forEach(msg => {
-                    const p = document.createElement('p');
-                    if (msg.className) p.className = msg.className;
-                    p.innerHTML = msg.content;
-                    chatOutput.appendChild(p);
-                });
-                scrollToBottom();
-                addMessageToChat('--- End of History ---', 'system-message');
-            }
-            break;
-        case 'clear':
-        case 'home':
-            chatOutput.innerHTML = '';
-            addMessageToChat('Chat cleared.', 'system-message');
-            break;
-        case 'invite':
-        case 'i':
-            const sessionId = getSessionId();
-            if (sessionId) {
-                const inviteLink = `${window.location.origin}/rt/?sID=${sessionId}`;
-                addMessageToChat(`Share this link to invite others: <a href="${inviteLink}" target="_blank">${inviteLink}</a>`, 'system-message');
-            } else {
-                addMessageToChat('Cannot generate invite link. No active session.', 'error-message');
+        case 'kill':
+            if (args === '') {
+                addMessageToChat('Disconnecting...', 'system-message');
+                clearSessionData();
+                setTimeout(() => {
+                    window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
+                }, 1000);
             }
             break;
         default:
             addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
-    }
-}
-
-function showHelp() {
-    addMessageToChat(`Available commands:
-        <br>/name [new_name] - Change your nickname (leave empty for random).
-        <br>/profile [bio] - Set your profile bio (leave empty to view).
-        <br>/whoami - Display your current user info.
-        <br>/whois [nickname] - Look up a user's info.
-        <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
-        <br>/invite - Get a shareable link to this chat session (/i, + also work).
-        <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).
-        <br>/review [count] - Show local history (default: 12). (/ also works).
-        <br>/nightmode - Toggle dark/light theme.
-        <br>/time - Display current date and time.
-        <br>/12 or /24 - Toggle 12/24 hour time format.
-        <br>/echo [message] - Echo a message (% also works).
-        <br>/roll [sides] - Roll a dice (default: 6 sides).
-        <br>/flip - Flip a coin.
-        <br>/8ball - Ask the Magic 8-Ball a question.
-        <br>/fortune - Get a fortune cookie message.
-        <br>/uptime - Show session uptime.
-        <br>/version - Show RetroTerm version.
-        <br>/about - About RetroTerm.
-        <br>/clear or /home - Clear the chat screen (~ also works).
-        <br>/help - Show this help message (? also works).`, 'system-message');
-}
-
-async function handleMessage(message) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const prefixedMessage = `MSG|${state.userName}|${message}`;
-    try {
-        await serverApi.sendMessage(sessionId, prefixedMessage);
-    } catch (error) {
-        console.error('Failed to send message:', error);
-        addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
-    }
-}
-
-async function handleEmote(action) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const emoteMessage = `EMOTE|${state.userName}|${action}`;
-    try {
-        await serverApi.sendMessage(sessionId, emoteMessage);
-    } catch (error) {
-        console.error('Failed to send emote:', error);
-        addMessageToChat(`Error sending emote: ${error.message}`, 'error-message');
-    }
-}
-
-async function handleArt(artContent) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const artMessage = `ART|${state.userName}|${artContent}`;
-    try {
-        await serverApi.sendMessage(sessionId, artMessage);
-        artWidget.classList.add('hidden');
-    } catch (error) {
-        console.error('Failed to send art:', error);
-        addMessageToChat(`Error sending art: ${error.message}`, 'error-message');
-    }
-}
-window.sendArt = handleArt;
-
-async function handleBroadcastCommand(command, args) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return false;
-    }
-
-    let prefixedMessage = '';
-
-    switch (command) {
-        case 'roll':
-            const sides = args ? parseInt(args) : 6;
-            if (isNaN(sides) || sides < 2) return false;
-            const result = Math.floor(Math.random() * sides) + 1;
-            prefixedMessage = `ROLL|${state.userName}|d${sides} ${result}`;
-            break;
-        case 'flip':
-            const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            prefixedMessage = `FLIP|${state.userName}|${coin}`;
-            break;
-        default:
-            return false;
-    }
-
-    try {
-        await serverApi.sendMessage(sessionId, prefixedMessage);
-        return true;
-    } catch (error) {
-        console.error(`Failed to send ${command}:`, error);
-        addMessageToChat(`Error sending command: ${error.message}`, 'error-message');
-        return false;
-    }
-}
-
-const LOCAL_COMMANDS = [
-    'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
-    'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
-    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i'
-];
-
-async function handleHistoryCommand(args) {
-    let minutes = parseInt(args, 10);
-    if (isNaN(minutes)) {
-        minutes = 15; // Default to 15 minutes
-    }
-    // Clamp the value between 1 and 90
-    minutes = Math.max(1, Math.min(minutes, 90));
-
-    addMessageToChat(`Fetching history for the last ${minutes} minute(s)...`, 'system-message');
-    try {
-        const history = await serverApi.getHistory(getSessionId(), minutes);
-        if (history && history.length > 0) {
-            addMessageToChat('--- Start of History ---', 'system-message');
-            history.forEach(displayBroadcastMessage);
-            addMessageToChat('--- End of History ---', 'system-message');
-        } else {
-            addMessageToChat('No history found for this session.', 'system-message');
-        }
-    } catch (error) {
-        addMessageToChat(`Error fetching history: ${error.message}`, 'error-message');
-    }
-}
-
-async function handleArchiveCommand() {
-    addMessageToChat(`Fetching full message archive...`, 'system-message');
-    try {
-        const history = await serverApi.getArchive(getSessionId());
-        if (history && history.length > 0) {
-            addMessageToChat('--- Start of Archive ---', 'system-message');
-            history.forEach(displayBroadcastMessage);
-            addMessageToChat('--- End of Archive ---', 'system-message');
-        } else {
-            addMessageToChat('No archive found for this session.', 'system-message');
-        }
-    } catch (error) {
-        addMessageToChat(`Error fetching archive: ${error.message}`, 'error-message');
     }
 }
 
@@ -577,167 +206,59 @@ chatForm.addEventListener('submit', async (e) => {
     if (!input) return;
     chatInput.value = '';
 
-    if (input === '🧚🏼‍♀️') {
-        await handleArchiveCommand();
-        return;
-    }
-
-    // Handle shortcuts that map to server commands
-    if (input.startsWith(':') && input.length > 1) {
-        await handleEmote(input.slice(1).trim());
-        return;
-    }
-    if (input.startsWith('%')) {
-        const echoText = input.slice(1).trim();
-        if (echoText) {
-            const prefixedMessage = `ECHO||${echoText}`;
-            await serverApi.sendMessage(getSessionId(), prefixedMessage);
-        }
-        return;
-    }
-
-    // Handle shortcuts that map to local commands
-    if (input.startsWith('.') && input.length > 1) {
-        handleLocalCommand(`/name ${input.slice(1).trim()}`);
-        return;
-    }
-    if (input.startsWith('@') && input.length > 1) {
-        const suffix = input.slice(1).trim();
-        if (suffix) {
-            state.userName += suffix;
-            saveSettings();
-            addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-        }
-        return;
-    }
-
-    const shortcuts = {
-        '?': '/help',
-        '~': '/clear',
-        '/': '/review',
-        '.': '/name',
-        '@': '/whoami',
-        '+': '/invite'
-    };
-
-    const commandInput = shortcuts[input] || input;
-
-    if (commandInput.startsWith('/')) {
-        const parts = commandInput.slice(1).split(' ');
+    if (input.startsWith('/')) {
+        const parts = input.slice(1).split(' ');
         const command = parts[0].toLowerCase();
         const args = parts.slice(1).join(' ');
 
-        if (LOCAL_COMMANDS.includes(command)) {
-            handleLocalCommand(commandInput);
-        } else if (command === 'history' || command === 'h') {
-            await handleHistoryCommand(args);
-        } else if (['me', 'em', 'emote'].includes(command)) {
-            await handleEmote(args);
-        } else if (['roll', 'flip'].includes(command)) {
-            await handleBroadcastCommand(command, args);
-        } else if (command === 'echo') {
-            const prefixedMessage = `ECHO||${args}`;
-            await serverApi.sendMessage(getSessionId(), prefixedMessage);
-        } else if (command === 'kill') {
-            if (args === '') {
-                addMessageToChat('Disconnecting...', 'system-message');
-                deleteCookie('sID');
-                setTimeout(() => {
-                    window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
-                }, 1000);
-            } else if (args === '9') {
-                const sessionId = getSessionId();
-                if (!sessionId) {
-                    addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-                } else {
-                    const killMessage = `KILL9|${state.userName}|`;
-                    await serverApi.sendMessage(sessionId, killMessage);
-                    addMessageToChat('Kill request sent to server...', 'system-message');
-                }
+        if (command === 'kill' && args === '9') {
+            const sessionId = getSessionId();
+            if (!sessionId) {
+                addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+            } else {
+                const killMessage = `KILL9|${state.userName}|`;
+                await serverApi.sendMessage(sessionId, killMessage);
+                addMessageToChat('Kill request sent to server...', 'system-message');
             }
         } else {
-            addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
+            handleLocalCommand(input);
         }
     } else {
-        await handleMessage(commandInput);
+        await handleMessage(input);
     }
 });
 
-const REACTIONS = [
-    { emoji: '❤️', description: 'love / affection' },
-    { emoji: '😊', description: 'happiness / approval' },
-    { emoji: '😂', description: 'amusement / shared laughter' },
-    { emoji: '😞', description: 'sadness / sympathy' },
-    { emoji: '😳', description: 'surprise / shock / embarrassment' },
-    { emoji: '😠', description: 'anger / disapproval' },
-    { emoji: '😒', description: 'disgust / disdain' },
-    { emoji: '😨', description: 'fear / anxiety' },
-    { emoji: '👍🏻', description: 'approval / agreement' },
-    { emoji: '👎', description: 'disapproval / disagreement' },
-    { emoji: '🎉', description: 'celebration / excitement' }
-];
+function startKillCountdown() {
+    let countdown = 30;
+    addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
 
-function populateReactionWidget() {
-    reactionWidget.innerHTML = '';
-    REACTIONS.forEach(({ emoji, description }) => {
-        const button = document.createElement('button');
-        button.textContent = emoji;
-        button.title = description;
-        button.setAttribute('aria-label', description);
-        reactionWidget.appendChild(button);
-    });
+    const interval = setInterval(() => {
+        countdown -= 5;
+        if (countdown > 0) {
+            addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+        } else {
+            clearInterval(interval);
+            addMessageToChat('% Please create a valid session to continue chatting.', 'system-message');
+            clearSessionData();
+            setTimeout(() => {
+                window.location.href = 'https://vsms.gameship.online/';
+            }, 2000);
+        }
+    }, 5000);
 }
-
-reactionButton.addEventListener('click', (event) => {
-    event.stopPropagation();
-    reactionWidget.classList.toggle('hidden');
-});
-
-reactionWidget.addEventListener('click', async (event) => {
-    if (event.target.tagName === 'BUTTON') {
-        const emoji = event.target.textContent;
-        await handleMessage(emoji);
-        reactionWidget.classList.add('hidden');
-    }
-});
-
-function loadArtWidget() {
-    if (isArtWidgetLoaded) return;
-
-    const iframe = document.createElement('iframe');
-    iframe.src = 'EmojiPaint.html';
-    iframe.style.width = '100%';
-    iframe.style.height = '100%';
-    iframe.style.border = 'none';
-    artWidget.appendChild(iframe);
-    isArtWidgetLoaded = true;
-}
-
-artButton.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (!isArtWidgetLoaded) {
-        loadArtWidget();
-    }
-    artWidget.classList.toggle('hidden');
-    reactionWidget.classList.add('hidden');
-});
-
-document.addEventListener('click', (event) => {
-    if (!reactionWidget.classList.contains('hidden') && !reactionWidget.contains(event.target) && event.target !== reactionButton) {
-        reactionWidget.classList.add('hidden');
-    }
-    if (!artWidget.classList.contains('hidden') && !artWidget.contains(event.target) && event.target !== artButton) {
-        artWidget.classList.add('hidden');
-    }
-});
 
 function displayBroadcastMessage(data) {
-    const { date, time } = getFormattedTimestamp(data.timestamp);
     const { message } = data;
-    let html = '';
-
     const parts = message.split('|');
     const type = parts[0];
+
+    if (type === 'KILL9_INITIATE_REDIRECT') {
+        startKillCountdown();
+        return;
+    }
+
+    let html;
+    const { date, time } = getFormattedTimestamp(data.timestamp);
     const nickname = parts[1];
     const content = parts.slice(2).join('|');
 
@@ -752,98 +273,40 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${time}]</span>
             `;
             break;
-        case 'EMOTE':
-            const parsedAction = parseMarkdown(content);
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span style="color: var(--system-color); font-style: italic;">* ${escapeHtml(nickname)} ${parsedAction}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            break;
-        case 'ROLL':
-            const [dice, result] = content.split(' ');
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="user-name">${escapeHtml(nickname)}:</span>
-                <span class="message-content">🎲 Rolled a ${dice}: ${result}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            break;
-        case 'FLIP':
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="user-name">${escapeHtml(nickname)}:</span>
-                <span class="message-content">🪙 Coin flip: ${content}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            break;
         case 'ECHO':
             const parsedEcho = parseMarkdown(content);
-            const echoEmojiClass = isEmojiOnly(content) ? ' big-emoji' : '';
             html = `
                 <span class="timestamp">[${date}]</span>
-                <span class="message-content${echoEmojiClass}">${parsedEcho}</span>
+                <span class="message-content">${parsedEcho}</span>
                 <span class="timestamp">[${time}]</span>
             `;
             break;
-        case 'ART':
-            const artContent = content.replace(/¶/g, '<br>');
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="user-name">${escapeHtml(nickname)}:</span>
-                <div class="message-content">
-                    <div class="art-content">${artContent}</div>
-                </div>
-                <span class="timestamp">[${time}]</span>
-            `;
-            break;
-        case 'KILL9_SUCCESS':
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span class="system-message">SERVER: Session has been terminated by user request. Disconnecting.</span>
-                <span class="timestamp">[${time}]</span>
-            `;
-            addMessageToChat(html, 'system-message', false);
-            deleteCookie('sID');
-            setTimeout(() => {
-                window.location.href = 'https://vsms.gameship.online/';
-            }, 3000);
-            return; // Stop further processing
         default:
-            // Fallback for any message that doesn't match the format
-            html = `
+             html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="message-content">${escapeHtml(message)}</span>
                 <span class="timestamp">[${time}]</span>
             `;
             break;
     }
-
     addMessageToChat(html, 'user-message', true);
 }
 
 async function initializeApp() {
     loadSettings();
-    populateReactionWidget();
     addMessageToChat('Welcome to RetroTerm.', 'system-message');
     addMessageToChat('Connecting to server...', 'system-message');
 
     try {
         const isNewJoiner = await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
-        // Pass the message handler function as a callback to avoid race conditions
         connectWebSocket(displayBroadcastMessage);
-
         if (isNewJoiner) {
             await handleHistoryCommand();
-            await handleEmote("has joined.");
         }
-
-        addMessageToChat('Type /help for a list of commands.', 'system-message');
     } catch (error) {
-        addMessageToChat(`Connection failed: ${error.message}. Please refresh to try again.`, 'error-message');
+        addMessageToChat(`Connection failed: ${error.message}`, 'error-message');
     }
-
     chatInput.focus();
 }
 
