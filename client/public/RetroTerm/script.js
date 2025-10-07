@@ -668,8 +668,7 @@ const REACTIONS = [
     { emoji: '😨', description: 'fear / anxiety' },
     { emoji: '🤪', description: 'zany / silliness' },
     { emoji: '👍🏻', description: 'approval / agreement' },
-    { emoji: '👎', description: 'disapproval / disagreement' },
-    { emoji: '🎉', description: 'celebration / excitement' }
+    { emoji: '👎', description: 'disapproval / disagreement' }
 ];
 
 function populateReactionWidget() {

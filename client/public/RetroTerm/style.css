@@ -377,7 +377,7 @@ body {
 #reaction-widget {
     position: absolute;
     bottom: 75px; /* Adjust as needed */
-    left: 20px;  /* Move further left */
+    left: 10px;  /* Nudged left */
     background: var(--container-bg);
     border: 1px solid var(--input-border);
     border-radius: 8px;
