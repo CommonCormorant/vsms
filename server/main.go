@@ -482,8 +482,8 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sID")
-	if sessionID == "" {
-		log.Println("WebSocket connection rejected: no session ID")
+	if !isSessionValid(sessionID) {
+		log.Printf("WebSocket connection rejected for invalid session ID: %s", sessionID)
 		return
 	}
 
@@ -570,6 +570,32 @@ func (h *Hub) broadcastToSession(sessionID string, message []byte) {
 }
 
 // --- Utility & Cleanup Functions ---
+
+func isSessionValid(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	stmt, err := db.Prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+	if err != nil {
+		log.Printf("Error preparing session validation statement: %v", err)
+		return false
+	}
+	defer stmt.Close()
+
+	result, err := stmt.Exec(time.Now(), sessionID)
+	if err != nil {
+		log.Printf("Error executing session validation for session %s: %v", sessionID, err)
+		return false
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("Error getting rows affected for session validation on session %s: %v", sessionID, err)
+		return false
+	}
+
+	return rowsAffected > 0
+}
 
 func hashName(name string) string {
 	hasher := sha256.New()
