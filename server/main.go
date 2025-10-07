@@ -199,6 +199,7 @@ for from, to := range redirects {
 	}).Methods("POST")
 	api.HandleFunc("/history", historyHandler).Methods("GET")
 	api.HandleFunc("/archive", archiveHandler).Methods("GET")
+	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
 	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
@@ -428,13 +429,6 @@ func archiveHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-func wasDeletedHandler(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("sID")
-	wasReal := wasSessionEverReal(sessionID)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"was_real": wasReal})
-}
-
 func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	var msg ChatMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
@@ -618,6 +612,20 @@ func (h *Hub) broadcastToSession(sessionID string, message []byte) {
 	}
 }
 
+func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	isValid := isSessionReal(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"valid": isValid})
+}
+
+func wasDeletedHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	wasReal := wasSessionEverReal(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"was_real": wasReal})
+}
+
 // --- Utility & Cleanup Functions ---
 
 func wasSessionEverReal(sessionID string) bool {
@@ -631,6 +639,21 @@ func wasSessionEverReal(sessionID string) bool {
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("Error checking past session existence for session %s: %v", sessionID, err)
+		}
+		return false
+	}
+	return true
+}
+
+func isSessionReal(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	var id int
+	err := db.QueryRow("SELECT id FROM sessions WHERE session_id = ?", sessionID).Scan(&id)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("Error checking session existence for session %s: %v", sessionID, err)
 		}
 		return false
 	}
