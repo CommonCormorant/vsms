@@ -594,7 +594,7 @@ chatForm.addEventListener('submit', async (e) => {
         handleLocalCommand(`/name ${input.slice(1).trim()}`);
         return;
     }
-    if (input.startsWith('@') && input.length > 1) {
+    if (input.startsWith('&') && input.length > 1) {
         const suffix = input.slice(1).trim();
         if (suffix) {
             state.userName += suffix;
@@ -609,7 +609,6 @@ chatForm.addEventListener('submit', async (e) => {
         '~': '/clear',
         '/': '/review',
         '.': '/name',
-        '@': '/whoami',
         '+': '/invite'
     };
 
