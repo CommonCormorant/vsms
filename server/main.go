@@ -199,6 +199,7 @@ for from, to := range redirects {
 	}).Methods("POST")
 	api.HandleFunc("/history", historyHandler).Methods("GET")
 	api.HandleFunc("/archive", archiveHandler).Methods("GET")
+	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -440,8 +441,9 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Handle KILL9 command
 	parts := strings.Split(msg.Message, "|")
-	if len(parts) > 0 && parts[0] == "KILL9" {
-		handleKill9Request(hub, msg.SessionID)
+	if len(parts) > 1 && parts[0] == "KILL9" {
+		userName := parts[1]
+		go handleKill9Request(hub, msg.SessionID, userName)
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "kill request received"})
 		return
@@ -499,7 +501,34 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-func handleKill9Request(hub *Hub, sessionID string) {
+func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) {
+	// Store the message in the database
+	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
+	if err != nil {
+		log.Printf("Database error on broadcastAndStore prep: %v", err)
+		return
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	if err != nil {
+		log.Printf("Failed to save broadcast message: %v", err)
+		// Continue to broadcast even if save fails
+	}
+
+	// Broadcast the message via WebSocket
+	jsonMsg, err := json.Marshal(ChatMessage{
+		SessionID: sessionID,
+		Message:   message,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		hub.broadcastToSession(sessionID, jsonMsg)
+	} else {
+		log.Printf("Failed to marshal broadcast message: %v", err)
+	}
+}
+
+func handleKill9Request(hub *Hub, sessionID string, userName string) {
 	hub.killRequestsMutex.Lock()
 	defer hub.killRequestsMutex.Unlock()
 
@@ -510,7 +539,10 @@ func handleKill9Request(hub *Hub, sessionID string) {
 			Count:     1,
 			Timestamp: time.Now(),
 		}
-		log.Printf("First kill request for session %s or previous expired. Timer started.", sessionID)
+		log.Printf("First kill request for session %s by user %s. Timer started.", sessionID, userName)
+
+		warnMsg := fmt.Sprintf("KILL9_WARN|%s|First /kill 9 request received. A second command within 12 minutes will terminate the session.", userName)
+		broadcastAndStore(hub, sessionID, warnMsg, "server")
 		return
 	}
 
@@ -518,37 +550,42 @@ func handleKill9Request(hub *Hub, sessionID string) {
 	log.Printf("Kill request count for session %s is now %d.", sessionID, tracker.Count)
 
 	if tracker.Count >= 2 {
-		log.Printf("Second valid kill request for session %s. Attempting to delete.", sessionID)
-		delete(hub.killRequests, sessionID)
+		log.Printf("Second valid kill request for session %s by %s. Terminating session.", sessionID, userName)
+		delete(hub.killRequests, sessionID) // Clean up the tracker
 
+		// 1. Broadcast "Session canceled"
+		cancelMsg := "KILL9_CANCEL|vsms|% **Session canceled**"
+		broadcastAndStore(hub, sessionID, cancelMsg, "server")
+
+		// Short delay to allow message to be processed/read
+		time.Sleep(1 * time.Second)
+
+		// 2. Delete the session from the database
 		result, err := db.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
 		if err != nil {
 			log.Printf("Failed to execute delete for session %s: %v", sessionID, err)
-			return // Do not broadcast if delete fails
+			return
 		}
-
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
 			log.Printf("Failed to get rows affected for session %s: %v", sessionID, err)
-			return // Do not broadcast if we can't confirm deletion
+			return
 		}
-
 		if rowsAffected == 0 {
-			log.Printf("Session %s not found in database for deletion.", sessionID)
-			return // Do not broadcast if no session was deleted
+			log.Printf("Session %s not found in database for deletion, but proceeding with client reset.", sessionID)
+		} else {
+			log.Printf("Successfully deleted session %s from database. Rows affected: %d", sessionID, rowsAffected)
 		}
 
-		log.Printf("Successfully deleted session %s from database. Rows affected: %d", sessionID, rowsAffected)
+		// 3. Broadcast final messages
+		deletedMsg := "KILL9_DELETED|vsms|% ***SESSION DELETED*** :: Resetting clients."
+		broadcastAndStore(hub, sessionID, deletedMsg, "server")
 
-		// Broadcast kill success message to all clients in the session
+		// 4. Broadcast the success message that triggers client redirect
 		successMsg := "KILL9_SUCCESS||"
-		jsonMsg, err := json.Marshal(ChatMessage{
-			SessionID: sessionID,
-			Message:   successMsg,
-			Timestamp: time.Now(),
-		})
+		successJson, err := json.Marshal(ChatMessage{SessionID: sessionID, Message: successMsg, Timestamp: time.Now()})
 		if err == nil {
-			hub.broadcastToSession(sessionID, jsonMsg)
+			hub.broadcastToSession(sessionID, successJson)
 		}
 	}
 }
@@ -569,7 +606,29 @@ func (h *Hub) broadcastToSession(sessionID string, message []byte) {
 	}
 }
 
+func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	isValid := isSessionReal(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"valid": isValid})
+}
+
 // --- Utility & Cleanup Functions ---
+
+func isSessionReal(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	var id int
+	err := db.QueryRow("SELECT id FROM sessions WHERE session_id = ?", sessionID).Scan(&id)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("Error checking session existence for session %s: %v", sessionID, err)
+		}
+		return false
+	}
+	return true
+}
 
 func isSessionValid(sessionID string) bool {
 	if sessionID == "" {

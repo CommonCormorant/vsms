@@ -55,6 +55,14 @@ const serverApi = {
             throw new Error(`Archive request failed: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    async checkSession(session_id) {
+        const response = await fetch(`/api/session/check?sID=${session_id}`);
+        if (!response.ok) {
+            throw new Error(`Session check failed: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 
@@ -64,34 +72,48 @@ const session = {
 };
 
 async function initializeSession(userName) {
-    // This function will return `true` if the user is joining via a shared link,
-    // so the app knows to fetch the history automatically.
     let isNewJoiner = false;
-
-    // 1. Check for session ID in the URL first
     const urlParams = new URLSearchParams(window.location.search);
-    const sID = urlParams.get('sID');
+    let sID = urlParams.get('sID');
+
     if (sID) {
+        isNewJoiner = true;
+    } else {
+        const savedSession = localStorage.getItem(session.SESSION_STORAGE_KEY);
+        if (savedSession) {
+            sID = JSON.parse(savedSession).id;
+        }
+    }
+
+    if (!sID) {
+        console.log('No session ID found. Redirecting to auth.');
+        window.location.href = 'https://vsms.gameship.online/auth/';
+        throw new Error('Redirecting to auth...');
+    }
+
+    try {
+        const { valid } = await serverApi.checkSession(sID);
+        if (!valid) {
+            localStorage.removeItem(session.SESSION_STORAGE_KEY);
+            deleteCookie('sID');
+            throw new Error('Invalid session');
+        }
+
         session.id = sID;
         localStorage.setItem(session.SESSION_STORAGE_KEY, JSON.stringify({ id: session.id }));
-        console.log('Session loaded from URL (sID):', session.id);
-        // Clean the URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-        isNewJoiner = true; // This user joined via a link
+
+        if (isNewJoiner) {
+            console.log('Session loaded from URL (sID) and verified:', session.id);
+            window.history.replaceState({}, document.title, window.location.pathname);
+        } else {
+            console.log('Session loaded from localStorage and verified:', session.id);
+        }
+
         return isNewJoiner;
-    }
 
-    // 2. Try to load session from localStorage
-    const savedSession = localStorage.getItem(session.SESSION_STORAGE_KEY);
-    if (savedSession) {
-        session.id = JSON.parse(savedSession).id;
-        console.log('Session loaded from localStorage:', session.id);
-        return;
+    } catch (error) {
+        throw error;
     }
-
-    // 3. If no session, redirect
-    console.log('No session found. Redirecting...');
-    window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
 }
 
 function getSessionId() {

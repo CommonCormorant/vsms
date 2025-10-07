@@ -731,6 +731,25 @@ document.addEventListener('click', (event) => {
     }
 });
 
+function startKillCountdown() {
+    let countdown = 30;
+    addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+
+    const interval = setInterval(() => {
+        countdown -= 5;
+        if (countdown > 0) {
+            addMessageToChat(`% *Countdown to client close*: ***${countdown} Seconds***`, 'system-message');
+        } else {
+            clearInterval(interval);
+            addMessageToChat('% Please create a valid session to continue chatting.', 'system-message');
+            deleteCookie('sID');
+            setTimeout(() => {
+                window.location.href = 'https://vsms.gameship.online/';
+            }, 2000);
+        }
+    }, 5000);
+}
+
 function displayBroadcastMessage(data) {
     const { date, time } = getFormattedTimestamp(data.timestamp);
     const { message } = data;
@@ -797,20 +816,33 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${time}]</span>
             `;
             break;
-        case 'KILL9_SUCCESS':
+        case 'KILL9_WARN':
+             html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="system-message"><b>*** WARNING ***</b><br>Request from <b>${escapeHtml(nickname)}</b>: ${escapeHtml(content)}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'KILL9_CANCEL':
             html = `
                 <span class="timestamp">[${date}]</span>
-                <span class="system-message">SERVER: Session has been terminated by user request. Disconnecting.</span>
+                <span class="system-message">${parseMarkdown(content)}</span>
                 <span class="timestamp">[${time}]</span>
             `;
             addMessageToChat(html, 'system-message', false);
-            deleteCookie('sID');
-            setTimeout(() => {
-                window.location.href = 'https://vsms.gameship.online/';
-            }, 3000);
-            return; // Stop further processing
+            startKillCountdown();
+            return;
+        case 'KILL9_DELETED':
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="system-message">${parseMarkdown(content)}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'KILL9_SUCCESS':
+            console.log('KILL9_SUCCESS received, client reset is being handled by countdown.');
+            return;
         default:
-            // Fallback for any message that doesn't match the format
             html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="message-content">${escapeHtml(message)}</span>
@@ -821,6 +853,7 @@ function displayBroadcastMessage(data) {
 
     addMessageToChat(html, 'user-message', true);
 }
+
 
 async function initializeApp() {
     loadSettings();
