@@ -553,7 +553,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		delete(hub.killRequests, sessionID)
 
 		// 1. Broadcast "Session canceled" as an anonymous ECHO message.
-		cancelMsg := "ECHO||% **Session canceled**"
+		cancelMsg := "ECHO||***Session Canceled***"
 		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast")
 
 		time.Sleep(1 * time.Second)
@@ -562,16 +562,19 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		tx, err := db.Begin()
 		if err != nil {
 			log.Printf("CRITICAL: Failed to begin transaction for session deletion %s: %v", sessionID, err)
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 		result, err := tx.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
 		if err != nil {
 			log.Printf("CRITICAL: Failed to execute delete for session %s in transaction: %v", sessionID, err)
 			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 		if err := tx.Commit(); err != nil {
 			log.Printf("CRITICAL: Failed to commit transaction for session deletion %s: %v", sessionID, err)
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 		rowsAffected, _ := result.RowsAffected()
@@ -582,7 +585,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		}
 
 		// 3. Broadcast final messages as anonymous ECHO messages.
-		deletedMsg := "ECHO||% ***SESSION DELETED*** :: Resetting clients."
+		deletedMsg := "ECHO||***SESSION DELETED*** :: Resetting clients."
 		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast")
 
 		// 4. Broadcast the special non-visible message to trigger the client-side redirect.

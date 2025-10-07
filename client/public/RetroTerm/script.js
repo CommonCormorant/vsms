@@ -747,6 +747,11 @@ function displayBroadcastMessage(data) {
     const parts = message.split('|');
     const type = parts[0];
 
+    if (type === 'KILL9_DB_ERROR') {
+        addMessageToChat('***CRITICAL SERVER ERROR: Failed to delete session.***', 'error-message');
+        return;
+    }
+
     if (type === 'KILL9_INITIATE_REDIRECT') {
         startKillCountdown();
         return;
