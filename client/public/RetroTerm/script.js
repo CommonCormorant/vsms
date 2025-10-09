@@ -20,6 +20,11 @@ const reactionButton = document.getElementById('reaction-button');
 const reactionWidget = document.getElementById('reaction-widget');
 const artButton = document.getElementById('art-button');
 const artWidget = document.getElementById('art-widget');
+const pArtButton = document.getElementById('p-art-button');
+const pArtWidget = document.getElementById('p-art-widget');
+const pArtTextarea = document.getElementById('p-art-textarea');
+const pArtClearButton = document.getElementById('p-art-clear');
+const pArtSendButton = document.getElementById('p-art-send');
 
 let isArtWidgetLoaded = false;
 
@@ -542,6 +547,24 @@ async function handleArt(artContent) {
 }
 window.sendArt = handleArt;
 
+async function handleParagraphArt(content) {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return;
+    }
+    const processedContent = content.replace(/\n/g, '¶');
+    const partMessage = `PART|${state.userName}|${processedContent}`;
+    try {
+        await serverApi.sendMessage(sessionId, partMessage);
+        pArtWidget.classList.add('hidden');
+        pArtTextarea.value = '';
+    } catch (error) {
+        console.error('Failed to send paragraph art:', error);
+        addMessageToChat(`Error sending paragraph: ${error.message}`, 'error-message');
+    }
+}
+
 async function handleBroadcastCommand(command, args) {
     const sessionId = getSessionId();
     if (!sessionId) {
@@ -828,6 +851,25 @@ artButton.addEventListener('click', (event) => {
     }
     artWidget.classList.toggle('hidden');
     reactionWidget.classList.add('hidden');
+    pArtWidget.classList.add('hidden');
+});
+
+pArtButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    pArtWidget.classList.toggle('hidden');
+    artWidget.classList.add('hidden');
+    reactionWidget.classList.add('hidden');
+});
+
+pArtClearButton.addEventListener('click', () => {
+    pArtTextarea.value = '';
+});
+
+pArtSendButton.addEventListener('click', async () => {
+    const content = pArtTextarea.value.trim();
+    if (content) {
+        await handleParagraphArt(content);
+    }
 });
 
 document.addEventListener('click', (event) => {
@@ -836,6 +878,9 @@ document.addEventListener('click', (event) => {
     }
     if (!artWidget.classList.contains('hidden') && !artWidget.contains(event.target) && event.target !== artButton) {
         artWidget.classList.add('hidden');
+    }
+    if (!pArtWidget.classList.contains('hidden') && !pArtWidget.contains(event.target) && event.target !== pArtButton) {
+        pArtWidget.classList.add('hidden');
     }
 });
 
@@ -873,7 +918,8 @@ function displayBroadcastMessage(data) {
         return;
     }
 
-    if (type === 'JOIN' || type === 'PART') {
+    // Handle user joining or leaving. A PART message with 2 parts is a leave event.
+    if (type === 'JOIN' || (type === 'PART' && parts.length === 2)) {
         const user = escapeHtml(parts[1]);
         if (type === 'JOIN') {
             if (!state.onlineUsers.find(u => u.toLowerCase() === user.toLowerCase())) {
@@ -976,6 +1022,17 @@ function displayBroadcastMessage(data) {
                 <div class="message-content">
                     <div class="art-content">${artContent}</div>
                 </div>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'PART':
+            // Render markdown first, then replace pilcrows with line breaks
+            let partContent = parseMarkdown(content);
+            partContent = partContent.replace(/¶/g, '<br>');
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <span class="message-content">${partContent}</span>
                 <span class="timestamp">[${time}]</span>
             `;
             break;
