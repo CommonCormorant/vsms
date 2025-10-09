@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RetroArcher Duel</title>
+      <link rel="icon" type="image/png" sizes="16x16" href="https://www.gameship.online/info/favicon-16.png">
+      <link rel="icon" type="image/png" sizes="32x32" href="https://www.gameship.online/info/favicon-32.png">
+      <link rel="icon" type="image/png" sizes="48x48" href="https://www.gameship.online/info/favicon-48.png">
+      <link rel="shortcut icon" href="https://www.gameship.online/info/favicon.ico">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <div id="screen">
+            <div id="info">
+                <div id="blue-info" class="player-info">
+                    <span>🔵 Blue</span>
+                    <span id="blue-gold">💰 17</span>
+                </div>
+                <div id="level">
+                    <span id="level-text">Level 1</span>
+                    <div id="wind">
+                        <span id="wind-icon">💨</span>
+                        <span id="wind-text">No Wind</span>
+                    </div>
+                </div>
+                <div id="red-info" class="player-info">
+                    <span>🔴 Red</span>
+                    <span id="red-gold">💰 17</span>
+                </div>
+            </div>
+            <canvas id="canvas"></canvas>
+        </div>
+        <div id="controls">
+            <div class="control">
+                <label>Angle: <span id="angle-val">45°</span></label>
+                <input type="range" id="angle" min="0" max="180" value="45">
+            </div>
+            <div class="control">
+                <label>Thrust: <span id="power-val">50</span></label>
+                <input type="range" id="power" min="1" max="100" value="50">
+            </div>
+            <div class="btns">
+                <button id="shop">🛒 Shop</button>
+                <button id="fire">💥 Fire!</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mode-modal" class="modal" style="display: flex;">
+        <div class="modal-content">
+            <h2>Choose Game Mode</h2>
+            <div class="mode-select">
+                <div class="mode-btn" onclick="Game.start('ai')">
+                    <div style="font-size: 3rem;">🤖</div>
+                    <h3>vs Computer</h3>
+                    <p>Play against AI</p>
+                </div>
+                <div class="mode-btn" onclick="Game.start('local')">
+                    <div style="font-size: 3rem;">👥</div>
+                    <h3>Local 2-Player</h3>
+                    <p>Hot-seat mode</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="shop-modal" class="modal">
+        <div class="modal-content">
+            <h2>🏹 Arrow Shop</h2>
+            <p style="text-align: center;">
+                Gold: <span id="shop-gold" style="color: #f39c12; font-weight: bold;">💰 0</span>
+            </p>
+            <div class="arrow-selector">
+                <h3>Select Arrow:</h3>
+                <div class="arrow-options" id="arrow-opts"></div>
+            </div>
+            <div class="shop-items" id="shop-items"></div>
+            <button id="close-shop" class="close-btn">Close Shop</button>
+        </div>
+    </div>
+
+    <div id="round-modal" class="modal">
+        <div class="modal-content" style="text-align: center;">
+            <h2 id="round-title">Round Over!</h2>
+            <p id="round-msg" style="font-size: 1.3rem; margin: 1.5rem 0;"></p>
+            <button id="next-round" style="background: var(--accent); width: 100%;">Next Round</button>
+        </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="network.js"></script>
+    <script src="physics.js"></script>
+    <script src="ai.js"></script>
+    <script src="shop.js"></script>
+    <script src="game.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
