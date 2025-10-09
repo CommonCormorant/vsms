@@ -30,6 +30,7 @@ let state = {
     joinTime: Date.now(),
     profile: '',
     messageHistory: [],
+    onlineUsers: [],
     use24Hour: true
 };
 
@@ -235,12 +236,14 @@ function handleLocalCommand(input) {
                 state.userName = args;
                 saveSettings();
                 addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+                checkForMail();
             } else {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
                 const nameIndex = Math.floor(Math.random() * 10);
                 state.userName = `${randomName}_${nameIndex}`;
                 saveSettings();
                 addMessageToChat(`You have been assigned a random name: ${escapeHtml(state.userName)}`, 'system-message');
+                checkForMail();
             }
             break;
         case 'nightmode':
@@ -410,9 +413,54 @@ function handleLocalCommand(input) {
                 addMessageToChat('Cannot generate invite link. No active session.', 'error-message');
             }
             break;
+        case 'alone':
+            handleAloneCommand();
+            break;
         default:
             addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
+    }
+}
+
+function handleAloneCommand() {
+    const otherUsers = state.onlineUsers.filter(u => u.toLowerCase() !== state.userName.toLowerCase());
+    if (otherUsers.length === 0) {
+        addMessageToChat("You are alone.", 'system-message');
+    } else {
+        const userList = otherUsers.map(u => escapeHtml(u)).join(', ');
+        addMessageToChat(`Not alone. Currently online: ${userList}`, 'system-message');
+    }
+}
+
+function handleImCommand(recipient, message) {
+    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
+    serverApi.sendWsMessage(imMessage);
+    addMessageToChat(`> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
+}
+
+async function checkForMail() {
+    if (!state.userName || state.userName === 'guest') return;
+    try {
+        const messages = await serverApi.checkMail(getSessionId(), state.userName);
+        if (messages && messages.length > 0) {
+            addMessageToChat(`--- You have ${messages.length} new message(s) ---`, 'system-message');
+            messages.forEach(displayBroadcastMessage);
+            addMessageToChat(`--- End of Messages ---`, 'system-message');
+        } else {
+            addMessageToChat('No new mail.', 'system-message');
+        }
+    } catch (error) {
+        addMessageToChat(`Error checking mail: ${error.message}`, 'error-message');
+    }
+}
+
+async function handleMessageCommand(recipient, message) {
+    const mailMessage = `MAIL|${recipient}|${state.userName}|${message}|U`;
+    try {
+        await serverApi.sendMessage(getSessionId(), mailMessage);
+        addMessageToChat(`> [Mail sent to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
+    } catch (error) {
+        addMessageToChat(`! Could not send mail to ${escapeHtml(recipient)}.`, 'error-message');
     }
 }
 
@@ -422,7 +470,12 @@ function showHelp() {
         <br>/profile [bio] - Set your profile bio (leave empty to view).
         <br>/whoami - Display your current user info.
         <br>/whois [nickname] - Look up a user's info.
+        <br>/alone - Check who is currently in the session.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
+        <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
+        <br>/message [recipient], [message] - Send mail to a user (@ also works).
+        <br>/message [recipient], [message] - Send mail to a user (/msg, /mail, @ also works).
+        <br>/mail ? - Check for new mail (@? also works).
         <br>/invite - Get a shareable link to this chat session (/i, + also work).
         <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).
         <br>/review [count] - Show local history (default: 12). (/ also works).
@@ -525,7 +578,8 @@ async function handleBroadcastCommand(command, args) {
 const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
     'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
-    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i'
+    'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i',
+    'alone'
 ];
 
 async function handleHistoryCommand(args) {
@@ -600,6 +654,35 @@ chatForm.addEventListener('submit', async (e) => {
             state.userName += suffix;
             saveSettings();
             addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+            checkForMail();
+        }
+        return;
+    }
+
+    if (input.startsWith('!')) {
+        const content = input.slice(1).trim();
+        const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+
+        if (match) {
+            const recipient = match[1].trim();
+            const message = match[2].trim();
+            handleImCommand(recipient, message);
+        } else {
+            addMessageToChat('Usage: ! recipient, message', 'system-message');
+        }
+        return;
+    }
+
+    if (input.startsWith('@')) {
+        const content = input.slice(1).trim();
+        const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+
+        if (match) {
+            const recipient = match[1].trim();
+            const message = match[2].trim();
+            handleMessageCommand(recipient, message);
+        } else {
+            addMessageToChat('Usage: @ recipient, message', 'system-message');
         }
         return;
     }
@@ -625,6 +708,24 @@ chatForm.addEventListener('submit', async (e) => {
             await handleHistoryCommand(args);
         } else if (['me', 'em', 'emote'].includes(command)) {
             await handleEmote(args);
+        } else if (command === 'im') {
+            const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+            if (match) {
+                const recipient = match[1].trim();
+                const message = match[2].trim();
+                handleImCommand(recipient, message);
+            } else {
+                addMessageToChat('Usage: /im recipient, message', 'system-message');
+            }
+        } else if (['message', 'msg'].includes(command)) {
+            const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+            if (match) {
+                const recipient = match[1].trim();
+                const message = match[2].trim();
+                await handleMessageCommand(recipient, message);
+            } else {
+                addMessageToChat('Usage: /message recipient, message', 'system-message');
+            }
         } else if (['roll', 'flip'].includes(command)) {
             await handleBroadcastCommand(command, args);
         } else if (command === 'echo') {
@@ -758,12 +859,43 @@ function displayBroadcastMessage(data) {
         return;
     }
 
+    if (type === 'JOIN' || type === 'PART') {
+        const user = escapeHtml(parts[1]);
+        if (type === 'JOIN') {
+            if (!state.onlineUsers.find(u => u.toLowerCase() === user.toLowerCase())) {
+                state.onlineUsers.push(user);
+            }
+            addMessageToChat(`* ${user} has joined.`, 'system-message');
+        } else { // PART
+            state.onlineUsers = state.onlineUsers.filter(u => u.toLowerCase() !== user.toLowerCase());
+            addMessageToChat(`* ${user} has left.`, 'system-message');
+        }
+        return;
+    }
+
+    if (type === 'DELIVERY_FAILED') {
+        const recipient = escapeHtml(parts[1]);
+        addMessageToChat(`! Your instant message to ${recipient} could not be delivered. They are not online.`, 'error-message');
+        return;
+    }
+
     const { date, time } = getFormattedTimestamp(data.timestamp);
     const nickname = parts[1];
     const content = parts.slice(2).join('|');
     let html = '';
 
     switch (type) {
+        case 'IM': // Incoming Instant Message
+            const sender = nickname;
+            const imContent = content;
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span style="color: var(--accent-color-2);">[IM from ${escapeHtml(sender)}]:</span>
+                <span class="message-content">${parseMarkdown(imContent)}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            addMessageToChat(html, 'private-message', true);
+            return; // IMs are handled completely, so we return early.
         case 'MSG':
             const parsedMessage = parseMarkdown(content);
             const emojiClass = isEmojiOnly(content) ? ' big-emoji' : '';
@@ -840,11 +972,19 @@ async function initializeApp() {
     try {
         const isNewJoiner = await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
-        connectWebSocket(displayBroadcastMessage);
+        connectWebSocket(state.userName, displayBroadcastMessage);
 
         if (isNewJoiner) {
             await handleHistoryCommand();
             await handleEmote("has joined.");
+        }
+
+        // Get initial list of online users and announce
+        try {
+            state.onlineUsers = await serverApi.getOnlineUsers(getSessionId());
+            handleAloneCommand();
+        } catch (error) {
+            addMessageToChat(`Could not get online users: ${error.message}`, 'error-message');
         }
 
         addMessageToChat('Type /help for a list of commands.', 'system-message');

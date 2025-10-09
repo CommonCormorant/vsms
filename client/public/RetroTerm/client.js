@@ -1,4 +1,15 @@
+let wsConnection = null;
+
 const serverApi = {
+    sendWsMessage(message) {
+        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+            wsConnection.send(message);
+        } else {
+            console.error('WebSocket is not connected.');
+            addMessageToChat('Cannot send message: not connected to real-time server.', 'error-message');
+        }
+    },
+
     async requestToken(name) {
         const response = await fetch('/api/auth/request', {
             method: 'POST',
@@ -69,6 +80,22 @@ const serverApi = {
         const response = await fetch(`/api/session/was_deleted?sID=${session_id}`);
         if (!response.ok) {
             throw new Error(`Deleted session check failed: ${response.statusText}`);
+        }
+        return response.json();
+    },
+
+    async getOnlineUsers(session_id) {
+        const response = await fetch(`/api/online?sID=${session_id}`);
+        if (!response.ok) {
+            throw new Error(`Online users request failed: ${response.statusText}`);
+        }
+        return response.json();
+    },
+
+    async checkMail(session_id, nick) {
+        const response = await fetch(`/api/mail/check?sID=${session_id}&nick=${encodeURIComponent(nick)}`);
+        if (!response.ok) {
+            throw new Error(`Mail check failed: ${response.statusText}`);
         }
         return response.json();
     }
@@ -145,7 +172,7 @@ function getSessionId() {
     return session.id;
 }
 
-function connectWebSocket(onMessageCallback) {
+function connectWebSocket(userName, onMessageCallback) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Cannot connect to real-time server without a session.', 'error-message');
@@ -156,10 +183,13 @@ function connectWebSocket(onMessageCallback) {
     const wsUrl = `${protocol}//${host}/api/ws?sID=${sessionId}`;
 
     const ws = new WebSocket(wsUrl);
+    wsConnection = ws; // Store the connection object
 
     ws.onopen = () => {
         console.log('WebSocket connected.');
         addMessageToChat('Real-time connection established.', 'system-message');
+        // Announce our nickname to the server
+        ws.send(`NICK|${userName}`);
     };
 
     ws.onmessage = (event) => {

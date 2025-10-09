@@ -51,6 +51,11 @@ type ChatMessage struct {
 	IPAddress string    `json:"-"` // Ignored in JSON responses
 }
 
+type BroadcastMessage struct {
+	SessionID string
+	Message   []byte
+}
+
 // --- WebSocket ---
 
 var upgrader = websocket.Upgrader{
@@ -60,22 +65,25 @@ var upgrader = websocket.Upgrader{
 }
 
 type Hub struct {
-	clients           map[*Client]bool
-	clientsMutex      sync.Mutex
-	broadcast         chan []byte
-	register          chan *Client
-	unregister        chan *Client
-	killRequests      map[string]*KillRequestTracker
-	killRequestsMutex sync.Mutex
+	sessions             map[string]map[*Client]bool
+	sessionsMutex        sync.Mutex
+	broadcast            chan BroadcastMessage
+	register             chan *Client
+	unregister           chan *Client
+	killRequests         map[string]*KillRequestTracker
+	killRequestsMutex    sync.Mutex
+	departureTimers      map[string]*time.Timer
+	departureTimersMutex sync.Mutex
 }
 
 func newHub() *Hub {
 	return &Hub{
-		broadcast:    make(chan []byte),
-		register:     make(chan *Client),
-		unregister:   make(chan *Client),
-		clients:      make(map[*Client]bool),
-		killRequests: make(map[string]*KillRequestTracker),
+		broadcast:       make(chan BroadcastMessage),
+		register:        make(chan *Client),
+		unregister:      make(chan *Client),
+		sessions:        make(map[string]map[*Client]bool),
+		killRequests:    make(map[string]*KillRequestTracker),
+		departureTimers: make(map[string]*time.Timer),
 	}
 }
 
@@ -83,27 +91,80 @@ func (h *Hub) run() {
 	for {
 		select {
 		case client := <-h.register:
-			h.clientsMutex.Lock()
-			h.clients[client] = true
-			h.clientsMutex.Unlock()
-		case client := <-h.unregister:
-			h.clientsMutex.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				close(client.send)
+			h.sessionsMutex.Lock()
+			if _, ok := h.sessions[client.sessionID]; !ok {
+				h.sessions[client.sessionID] = make(map[*Client]bool)
 			}
-			h.clientsMutex.Unlock()
-		case message := <-h.broadcast:
-			h.clientsMutex.Lock()
-			for client := range h.clients {
-				select {
-				case client.send <- message:
-				default:
-					close(client.send)
-					delete(h.clients, client)
+			h.sessions[client.sessionID][client] = true
+			h.sessionsMutex.Unlock()
+
+			// If the user is reconnecting, cancel their departure timer
+			timerKey := client.sessionID + ":" + client.Nickname
+			h.departureTimersMutex.Lock()
+			if timer, ok := h.departureTimers[timerKey]; ok {
+				timer.Stop()
+				delete(h.departureTimers, timerKey)
+			} else {
+				// Otherwise, announce their arrival to the session
+				if client.Nickname != "" {
+					joinMsg, _ := json.Marshal(ChatMessage{
+						SessionID: client.sessionID,
+						Message:   "JOIN|" + client.Nickname,
+						Timestamp: time.Now(),
+					})
+					h.broadcast <- BroadcastMessage{SessionID: client.sessionID, Message: joinMsg}
 				}
 			}
-			h.clientsMutex.Unlock()
+			h.departureTimersMutex.Unlock()
+
+		case client := <-h.unregister:
+			h.sessionsMutex.Lock()
+			if session, ok := h.sessions[client.sessionID]; ok {
+				if _, ok := session[client]; ok {
+					delete(session, client)
+					close(client.send)
+
+					if len(session) == 0 {
+						delete(h.sessions, client.sessionID)
+					}
+
+					// If the user had a nickname, start a departure timer to handle flaky connections
+					if client.Nickname != "" {
+						timerKey := client.sessionID + ":" + client.Nickname
+						h.departureTimersMutex.Lock()
+						h.departureTimers[timerKey] = time.AfterFunc(30*time.Second, func() {
+							partMsg, _ := json.Marshal(ChatMessage{
+								SessionID: client.sessionID,
+								Message:   "PART|" + client.Nickname,
+								Timestamp: time.Now(),
+							})
+							h.broadcast <- BroadcastMessage{SessionID: client.sessionID, Message: partMsg}
+							h.departureTimersMutex.Lock()
+							delete(h.departureTimers, timerKey)
+							h.departureTimersMutex.Unlock()
+						})
+						h.departureTimersMutex.Unlock()
+					}
+				}
+			}
+			h.sessionsMutex.Unlock()
+
+		case message := <-h.broadcast:
+			h.sessionsMutex.Lock()
+			if session, ok := h.sessions[message.SessionID]; ok {
+				for client := range session {
+					select {
+					case client.send <- message.Message:
+					default:
+						close(client.send)
+						delete(session, client)
+						if len(session) == 0 {
+							delete(h.sessions, message.SessionID)
+						}
+					}
+				}
+			}
+			h.sessionsMutex.Unlock()
 		}
 	}
 }
@@ -113,6 +174,7 @@ type Client struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	sessionID string
+	Nickname  string
 }
 
 func (c *Client) readPump() {
@@ -120,15 +182,72 @@ func (c *Client) readPump() {
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
+	// The first message from the client must be the nickname announcement.
+	_, message, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading nickname message: %v", err)
+		return
+	}
+
+	parts := strings.Split(string(message), "|")
+	if len(parts) != 2 || parts[0] != "NICK" {
+		log.Printf("First message was not a valid NICK announcement: %s", message)
+		return
+	}
+	c.Nickname = parts[1]
+	c.hub.register <- c // Now register the client with the hub, so it can be announced
+
+	// After registration, loop to read subsequent messages.
 	for {
-		_, message, err := c.conn.ReadMessage()
+		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
 			break
 		}
-		c.hub.broadcast <- message
+
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
+
+		if len(msgParts) >= 4 && msgParts[0] == "IM" {
+			recipientNick := msgParts[1]
+
+			c.hub.sessionsMutex.Lock()
+			var recipientClient *Client
+			if session, ok := c.hub.sessions[c.sessionID]; ok {
+				for client := range session {
+					if strings.EqualFold(client.Nickname, recipientNick) {
+						recipientClient = client
+						break
+					}
+				}
+			}
+			c.hub.sessionsMutex.Unlock()
+
+			if recipientClient != nil {
+				// Forward the message to the recipient
+				imMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID,
+					Message:   msgString,
+					Timestamp: time.Now(),
+				})
+				select {
+				case recipientClient.send <- imMsg:
+				default:
+					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
+				}
+			} else {
+				// Send delivery failed message back to sender
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID,
+					Message:   "DELIVERY_FAILED|" + recipientNick,
+					Timestamp: time.Now(),
+				})
+				c.send <- failMsg
+			}
+		}
+		// Other message types received over WebSocket are ignored.
 	}
 }
 
@@ -201,6 +320,10 @@ for from, to := range redirects {
 	api.HandleFunc("/archive", archiveHandler).Methods("GET")
 	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
 	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
+	api.HandleFunc("/online", func(w http.ResponseWriter, r *http.Request) {
+		onlineUsersHandler(hub, w, r)
+	}).Methods("GET")
+	api.HandleFunc("/mail/check", mailCheckHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -477,10 +600,104 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to marshal message", http.StatusInternalServerError)
 		return
 	}
-	hub.broadcast <- jsonMsg
+	hub.broadcast <- BroadcastMessage{SessionID: msg.SessionID, Message: jsonMsg}
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "message sent"})
+}
+
+func onlineUsersHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		http.Error(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	hub.sessionsMutex.Lock()
+	defer hub.sessionsMutex.Unlock()
+
+	var onlineUsers []string
+	if session, ok := hub.sessions[sessionID]; ok {
+		for client := range session {
+			if client.Nickname != "" {
+				onlineUsers = append(onlineUsers, client.Nickname)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(onlineUsers)
+}
+
+func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	recipientNick := r.URL.Query().Get("nick")
+	if sessionID == "" || recipientNick == "" {
+		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("Failed to start transaction: %v", err)
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	likePattern := "MAIL|" + recipientNick + "|%|U"
+	rows, err := tx.Query("SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND message LIKE ?", sessionID, likePattern)
+	if err != nil {
+		log.Printf("Database query error: %v", err)
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []ChatMessage
+	var messageIDs []int
+	for rows.Next() {
+		var msg ChatMessage
+		var id int
+		if err := rows.Scan(&id, &msg.Message, &msg.Timestamp); err != nil {
+			log.Printf("Failed to scan message row: %v", err)
+			http.Error(w, "Failed to scan message row", http.StatusInternalServerError)
+			return
+		}
+		msg.SessionID = sessionID
+		messages = append(messages, msg)
+		messageIDs = append(messageIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error: %v", err)
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	if len(messageIDs) > 0 {
+		args := make([]interface{}, len(messageIDs))
+		for i, v := range messageIDs {
+			args[i] = v
+		}
+		// Use REPLACE to change the status from Unread to Read
+		stmt := "UPDATE chat_messages SET message = REPLACE(message, '|U', '|R') WHERE id IN (?" + strings.Repeat(",?", len(messageIDs)-1) + ")"
+
+		_, err := tx.Exec(stmt, args...)
+		if err != nil {
+			log.Printf("Failed to update message status: %v", err)
+			http.Error(w, "Failed to update message status", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit transaction: %v", err)
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
 }
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
@@ -496,7 +713,7 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256), sessionID: sessionID}
-	client.hub.register <- client
+	// The client is now registered in the readPump after the nickname is received.
 
 	go client.writePump()
 	go client.readPump()
