@@ -20,6 +20,12 @@ const reactionButton = document.getElementById('reaction-button');
 const reactionWidget = document.getElementById('reaction-widget');
 const artButton = document.getElementById('art-button');
 const artWidget = document.getElementById('art-widget');
+const pArtButton = document.getElementById('p-art-button');
+const pArtWidget = document.getElementById('p-art-widget');
+const pArtTextarea = document.getElementById('p-art-textarea');
+const pArtClearButton = document.getElementById('p-art-clear');
+const pArtSendButton = document.getElementById('p-art-send');
+
 
 let isArtWidgetLoaded = false;
 
@@ -542,6 +548,30 @@ async function handleArt(artContent) {
 }
 window.sendArt = handleArt;
 
+async function handlePartMessage() {
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+        return;
+    }
+    const content = pArtTextarea.value;
+    if (!content.trim()) {
+        return; // Don't send empty messages
+    }
+
+    const processedContent = content.replace(/\n/g, '¶');
+    const partMessage = `PART|${state.userName}|${processedContent}`;
+
+    try {
+        await serverApi.sendMessage(sessionId, partMessage);
+        pArtTextarea.value = '';
+        pArtWidget.classList.add('hidden');
+    } catch (error) {
+        console.error('Failed to send paragraph text:', error);
+        addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
+    }
+}
+
 async function handleBroadcastCommand(command, args) {
     const sessionId = getSessionId();
     if (!sessionId) {
@@ -830,12 +860,32 @@ artButton.addEventListener('click', (event) => {
     reactionWidget.classList.add('hidden');
 });
 
+pArtButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    pArtWidget.classList.toggle('hidden');
+    // Hide other widgets when this one is opened
+    reactionWidget.classList.add('hidden');
+    artWidget.classList.add('hidden');
+});
+
+pArtSendButton.addEventListener('click', () => {
+    handlePartMessage();
+});
+
+pArtClearButton.addEventListener('click', () => {
+    pArtTextarea.value = '';
+});
+
+
 document.addEventListener('click', (event) => {
     if (!reactionWidget.classList.contains('hidden') && !reactionWidget.contains(event.target) && event.target !== reactionButton) {
         reactionWidget.classList.add('hidden');
     }
     if (!artWidget.classList.contains('hidden') && !artWidget.contains(event.target) && event.target !== artButton) {
         artWidget.classList.add('hidden');
+    }
+    if (!pArtWidget.classList.contains('hidden') && !pArtWidget.contains(event.target) && event.target !== pArtButton) {
+        pArtWidget.classList.add('hidden');
     }
 });
 
@@ -873,7 +923,8 @@ function displayBroadcastMessage(data) {
         return;
     }
 
-    if (type === 'JOIN' || type === 'PART') {
+    // Handle JOIN and PART (user leave) messages, which have 2 parts: TYPE|NICKNAME
+    if ((type === 'JOIN' || type === 'PART') && parts.length === 2) {
         const user = escapeHtml(parts[1]);
         if (type === 'JOIN') {
             if (!state.onlineUsers.find(u => u.toLowerCase() === user.toLowerCase())) {
@@ -931,6 +982,18 @@ function displayBroadcastMessage(data) {
                 <span class="timestamp">[${date}]</span>
                 <span class="user-name">${escapeHtml(nickname)}:</span>
                 <span class="message-content${emojiClass}">${parsedMessage}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            break;
+        case 'PART':
+            let partContent = parseMarkdown(content);
+            partContent = partContent.replace(/¶/g, '<br>');
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span class="user-name">${escapeHtml(nickname)}:</span>
+                <div class="message-content">
+                    ${partContent}
+                </div>
                 <span class="timestamp">[${time}]</span>
             `;
             break;

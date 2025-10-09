@@ -19,12 +19,23 @@
         <div id="art-widget" class="hidden">
             <!-- Art widget will be loaded here -->
         </div>
+        <div id="p-art-widget" class="widget hidden">
+            <div class="p-art-toolbar">
+                <small>Simple markup is supported, such as *italics*, **bold** and _underline_</small>
+            </div>
+            <textarea id="p-art-textarea"></textarea>
+            <div class="p-art-buttons">
+                <button id="p-art-clear">Clear</button>
+                <button id="p-art-send">Send</button>
+            </div>
+        </div>
         <form id="chat-form">
             <button type="button" id="art-button" aria-label="Send art">
                 <span class="art-rect">▯</span>
                 <span class="art-circle">○</span>
                 <span class="art-triangle">▲</span>
             </button>
+            <button type="button" id="p-art-button" class="chat-tool-button" title="Send a formatted paragraph">¶<i>t</i></button>
             <button type="button" id="reaction-button" aria-label="Send reaction">
                 <span class="smiley">☺</span>
                 <span class="heart">♡</span>
