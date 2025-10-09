@@ -455,10 +455,11 @@ async function checkForMail() {
 }
 
 async function handleMessageCommand(recipient, message) {
-    const mailMessage = `MAIL|${recipient}|${state.userName}|${message}|U`;
+    // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE|U
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}|U`;
     try {
         await serverApi.sendMessage(getSessionId(), mailMessage);
-        addMessageToChat(`> [Mail sent to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
+        addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
     } catch (error) {
         addMessageToChat(`! Could not send mail to ${escapeHtml(recipient)}.`, 'error-message');
     }
@@ -592,9 +593,10 @@ async function handleHistoryCommand(args) {
     addMessageToChat(`Fetching history for the last ${minutes} minute(s)...`, 'system-message');
     try {
         const history = await serverApi.getHistory(getSessionId(), minutes);
-        if (history && history.length > 0) {
+        const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
+        if (filteredHistory && filteredHistory.length > 0) {
             addMessageToChat('--- Start of History ---', 'system-message');
-            history.forEach(displayBroadcastMessage);
+            filteredHistory.forEach(displayBroadcastMessage);
             addMessageToChat('--- End of History ---', 'system-message');
         } else {
             addMessageToChat('No history found for this session.', 'system-message');
@@ -608,9 +610,10 @@ async function handleArchiveCommand() {
     addMessageToChat(`Fetching full message archive...`, 'system-message');
     try {
         const history = await serverApi.getArchive(getSessionId());
-        if (history && history.length > 0) {
+        const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
+        if (filteredHistory && filteredHistory.length > 0) {
             addMessageToChat('--- Start of Archive ---', 'system-message');
-            history.forEach(displayBroadcastMessage);
+            filteredHistory.forEach(displayBroadcastMessage);
             addMessageToChat('--- End of Archive ---', 'system-message');
         } else {
             addMessageToChat('No archive found for this session.', 'system-message');
@@ -675,14 +678,17 @@ chatForm.addEventListener('submit', async (e) => {
 
     if (input.startsWith('@')) {
         const content = input.slice(1).trim();
-        const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
-
-        if (match) {
-            const recipient = match[1].trim();
-            const message = match[2].trim();
-            handleMessageCommand(recipient, message);
+        if (content === '?') {
+            checkForMail();
         } else {
-            addMessageToChat('Usage: @ recipient, message', 'system-message');
+            const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+            if (match) {
+                const recipient = match[1].trim();
+                const message = match[2].trim();
+                await handleMessageCommand(recipient, message);
+            } else {
+                addMessageToChat('Usage: @recipient, message  OR  @? to check mail', 'system-message');
+            }
         }
         return;
     }
@@ -717,14 +723,22 @@ chatForm.addEventListener('submit', async (e) => {
             } else {
                 addMessageToChat('Usage: /im recipient, message', 'system-message');
             }
-        } else if (['message', 'msg'].includes(command)) {
-            const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
-            if (match) {
-                const recipient = match[1].trim();
-                const message = match[2].trim();
-                await handleMessageCommand(recipient, message);
+        } else if (['message', 'msg', 'mail'].includes(command)) {
+            if (args.trim() === '?') {
+                if (command === 'mail') {
+                    checkForMail();
+                } else {
+                    addMessageToChat('Bad syntax. To check for mail, use /mail ? or @?', 'system-message');
+                }
             } else {
-                addMessageToChat('Usage: /message recipient, message', 'system-message');
+                const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+                if (match) {
+                    const recipient = match[1].trim();
+                    const message = match[2].trim();
+                    await handleMessageCommand(recipient, message);
+                } else {
+                    addMessageToChat(`Usage: /${command} recipient, message`, 'system-message');
+                }
             }
         } else if (['roll', 'flip'].includes(command)) {
             await handleBroadcastCommand(command, args);
@@ -896,6 +910,20 @@ function displayBroadcastMessage(data) {
             `;
             addMessageToChat(html, 'private-message', true);
             return; // IMs are handled completely, so we return early.
+        case 'MAIL':
+            const mailSender = parts[1];
+            const mailRecipient = parts[2];
+            const mailContent = parts.slice(3, -1).join('|'); // Exclude status flag
+            if (mailRecipient.toLowerCase() === state.userName.toLowerCase()) {
+                 html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span style="color: var(--accent-color);">[Mail from ${escapeHtml(mailSender)}]:</span>
+                    <span class="message-content">${parseMarkdown(mailContent)}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+                addMessageToChat(html, 'private-message', true);
+            }
+            return;
         case 'MSG':
             const parsedMessage = parseMarkdown(content);
             const emojiClass = isEmojiOnly(content) ? ' big-emoji' : '';

@@ -92,11 +92,29 @@ func (h *Hub) run() {
 		select {
 		case client := <-h.register:
 			h.sessionsMutex.Lock()
+			// Get the list of current users before adding the new one.
+			var onlineUsers []string
+			if session, ok := h.sessions[client.sessionID]; ok {
+				for existingClient := range session {
+					if existingClient.Nickname != "" {
+						onlineUsers = append(onlineUsers, existingClient.Nickname)
+					}
+				}
+			}
+
 			if _, ok := h.sessions[client.sessionID]; !ok {
 				h.sessions[client.sessionID] = make(map[*Client]bool)
 			}
 			h.sessions[client.sessionID][client] = true
 			h.sessionsMutex.Unlock()
+
+			// Send the welcome message with the list of users directly to the new client.
+			welcomeMsg, _ := json.Marshal(ChatMessage{
+				SessionID: client.sessionID,
+				Message:   "WELCOME|" + strings.Join(onlineUsers, ","),
+				Timestamp: time.Now(),
+			})
+			client.send <- welcomeMsg
 
 			// If the user is reconnecting, cancel their departure timer
 			timerKey := client.sessionID + ":" + client.Nickname
@@ -320,9 +338,6 @@ for from, to := range redirects {
 	api.HandleFunc("/archive", archiveHandler).Methods("GET")
 	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
 	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
-	api.HandleFunc("/online", func(w http.ResponseWriter, r *http.Request) {
-		onlineUsersHandler(hub, w, r)
-	}).Methods("GET")
 	api.HandleFunc("/mail/check", mailCheckHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
@@ -606,29 +621,6 @@ func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "message sent"})
 }
 
-func onlineUsersHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("sID")
-	if sessionID == "" {
-		http.Error(w, "Session ID is required", http.StatusBadRequest)
-		return
-	}
-
-	hub.sessionsMutex.Lock()
-	defer hub.sessionsMutex.Unlock()
-
-	var onlineUsers []string
-	if session, ok := hub.sessions[sessionID]; ok {
-		for client := range session {
-			if client.Nickname != "" {
-				onlineUsers = append(onlineUsers, client.Nickname)
-			}
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(onlineUsers)
-}
-
 func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sID")
 	recipientNick := r.URL.Query().Get("nick")
@@ -645,7 +637,7 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	likePattern := "MAIL|" + recipientNick + "|%|U"
+	likePattern := "MAIL|%|U"
 	rows, err := tx.Query("SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND message LIKE ?", sessionID, likePattern)
 	if err != nil {
 		log.Printf("Database query error: %v", err)
@@ -664,9 +656,13 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to scan message row", http.StatusInternalServerError)
 			return
 		}
-		msg.SessionID = sessionID
-		messages = append(messages, msg)
-		messageIDs = append(messageIDs, id)
+		// Server-side filtering to ensure recipient matches
+		parts := strings.Split(msg.Message, "|")
+		if len(parts) >= 5 && parts[0] == "MAIL" && strings.EqualFold(parts[2], recipientNick) {
+			msg.SessionID = sessionID
+			messages = append(messages, msg)
+			messageIDs = append(messageIDs, id)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("Row iteration error: %v", err)
