@@ -839,16 +839,16 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 }
 
 func (h *Hub) broadcastToSession(sessionID string, message []byte) {
-	h.clientsMutex.Lock()
-	defer h.clientsMutex.Unlock()
+	h.sessionsMutex.Lock()
+	defer h.sessionsMutex.Unlock()
 
-	for client := range h.clients {
-		if client.sessionID == sessionID {
+	if session, ok := h.sessions[sessionID]; ok {
+		for client := range session {
 			select {
 			case client.send <- message:
 			default:
 				close(client.send)
-				delete(h.clients, client)
+				delete(session, client)
 			}
 		}
 	}
