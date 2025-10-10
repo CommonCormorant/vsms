@@ -194,7 +194,7 @@ function getSessionId() {
     return session.id;
 }
 
-function connectWebSocket(getUsername, onMessageCallback, onOpenCallback) {
+function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegistrationComplete) {
     const sessionId = getSessionId();
     if (!sessionId || preventReconnect) {
         return;
@@ -230,7 +230,7 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback) {
                     isRegistered = true;
 
                     // Update the local state with the server-confirmed nickname
-                    if (onRegistrationComplete) {
+                    if (typeof onRegistrationComplete === 'function') {
                         onRegistrationComplete(finalNickname);
                     }
 

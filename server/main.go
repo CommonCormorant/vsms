@@ -275,16 +275,16 @@ func (c *Client) readPump() {
 	c.ID = fmt.Sprintf("%x", sha256.Sum256([]byte(c.IPAddress+c.sessionID)))
 	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
 
-	// 3. Register the client with the hub.
-	c.hub.register <- c
-
-	// 4. Send a REGISTERED message back to the client with their stable ID and final nickname.
+	// 3. Send the REGISTERED message back to the client FIRST.
 	registeredMsg, _ := json.Marshal(ChatMessage{
 		SessionID: c.sessionID,
 		Message:   fmt.Sprintf("REGISTERED|%s|%s", c.ID, c.Nickname),
 		Timestamp: time.Now(),
 	})
 	c.send <- registeredMsg
+
+	// 4. Now, register the client with the hub.
+	c.hub.register <- c
 
 	// 5. If the user is a guest, send them a special prompt.
 	if strings.HasPrefix(c.Nickname, "guest") {
