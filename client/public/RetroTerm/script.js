@@ -317,6 +317,10 @@ function handleLocalCommand(input) {
             addMessageToChat(`You are ${escapeHtml(state.userName)}.`, 'system-message');
             break;
         case 'profile':
+            if (state.userName.startsWith('guest')) {
+                addMessageToChat('You must change your /name from "guest" to set a profile.', 'error-message');
+                return;
+            }
             if (args) {
                 state.profile = args;
                 saveSettings();
@@ -443,6 +447,10 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to send an IM.', 'error-message');
+        return;
+    }
     const clientId = serverApi.getClientId();
     if (!clientId) {
         addMessageToChat('Error: Not registered with the server yet.', 'error-message');
@@ -495,6 +503,10 @@ async function handleMailOutCommand() {
 }
 
 function handleEncryptedMessageCommand(type, recipient, message) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to send encrypted mail.', 'error-message');
+        return;
+    }
     const clientId = serverApi.getClientId();
     if (!clientId) {
         addMessageToChat('Error: Not registered with the server yet.', 'error-message');
@@ -519,6 +531,10 @@ function handleEncryptedMessageCommand(type, recipient, message) {
 }
 
 function handleMessageCommand(recipient, message) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to send mail.', 'error-message');
+        return;
+    }
     const clientId = serverApi.getClientId();
     if (!clientId) {
         addMessageToChat('Error: Not registered with the server yet.', 'error-message');
@@ -844,6 +860,10 @@ chatForm.addEventListener('submit', async (e) => {
                 }
             }
         } else if (command === 'mail' || command === 'mail?') {
+            if (state.userName.startsWith('guest')) {
+                addMessageToChat('You must change your /name from "guest" to use mail.', 'error-message');
+                return;
+            }
             if (command === 'mail?') {
                 args = '?';
             }

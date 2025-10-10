@@ -249,6 +249,9 @@ func (c *Client) readPump() {
 	}
 
 	requestedNick := initialParts[1]
+	if requestedNick == "" {
+		requestedNick = "guest"
+	}
 	if strings.Contains(requestedNick, ",") || strings.Contains(requestedNick, "!") {
 		log.Printf("Connection rejected for invalid nickname: %s", requestedNick)
 		return
@@ -268,6 +271,16 @@ func (c *Client) readPump() {
 		Timestamp: time.Now(),
 	})
 	c.send <- registeredMsg
+
+	// 5. If the user is a guest, send them a special prompt.
+	if strings.HasPrefix(c.Nickname, "guest") {
+		promptMsg, _ := json.Marshal(ChatMessage{
+			SessionID: c.sessionID,
+			Message:   "ECHO|***SYSTEM MESSAGE***: **Please update your /name**",
+			Timestamp: time.Now(),
+		})
+		c.send <- promptMsg
+	}
 
 	// 5. Main message loop. All subsequent messages must include the client's stable ID.
 	for {
@@ -306,6 +319,15 @@ func (c *Client) readPump() {
 						SessionID: c.sessionID, Message: updateMsg, Timestamp: time.Now(),
 					})
 					c.hub.broadcast <- BroadcastMessage{SessionID: c.sessionID, Message: jsonMsg}
+
+					if strings.HasPrefix(c.Nickname, "guest") {
+						promptMsg, _ := json.Marshal(ChatMessage{
+							SessionID: c.sessionID,
+							Message:   "ECHO|***SYSTEM MESSAGE***: **Please update your /name**",
+							Timestamp: time.Now(),
+						})
+						c.send <- promptMsg
+					}
 				}
 			}
 		case "IM":
