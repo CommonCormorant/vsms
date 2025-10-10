@@ -442,9 +442,10 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const imMessage = `IM|${recipient}|${message}`;
+    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
     serverApi.sendWsMessage(imMessage);
-    addMessageToChat(`> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
+    const sentImHtml = `> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`;
+    addMessageToChat(sentImHtml, 'private-message', true); // Add to history
 }
 
 async function checkForMail() {
@@ -1043,7 +1044,9 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        addMessageToChat(`! Your instant message to ${recipient} could not be delivered. They are not online.`, 'error-message');
+        const originalMessage = escapeHtml(parts.slice(2).join('|'));
+        const failHtml = `> [IM to ${recipient}]: ${originalMessage} <span style="color: var(--system-color-dark-gray);">[Fail: ${recipient} isn't here]</span>`;
+        addMessageToChat(failHtml, 'private-message-fail');
         return;
     }
 

@@ -246,11 +246,12 @@ func (c *Client) readPump() {
 		// Route message based on type
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 3 { // IM|recipient|message
+			if len(msgParts) < 4 { // IM|recipient|sender|message
 				continue
 			}
 			recipientNick := msgParts[1]
-			messageContent := strings.Join(msgParts[2:], "|")
+			senderNick := msgParts[2]
+			messageContent := strings.Join(msgParts[3:], "|")
 
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
@@ -265,8 +266,8 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				// Reconstruct the message with the SENDER's nickname for security and correctness
-				imMsgString := fmt.Sprintf("IM|%s|%s", c.Nickname, messageContent)
+				// Reconstruct the message to be IM|SENDER|MESSAGE for the recipient client
+				imMsgString := fmt.Sprintf("IM|%s|%s", senderNick, messageContent)
 				imMsgJson, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: imMsgString, Timestamp: time.Now(),
 				})
@@ -276,8 +277,10 @@ func (c *Client) readPump() {
 					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
 				}
 			} else {
+				// Include the original message content in the failure notice
+				failMsgString := fmt.Sprintf("DELIVERY_FAILED|%s|%s", recipientNick, messageContent)
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: failMsgString, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
