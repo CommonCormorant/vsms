@@ -103,6 +103,19 @@ const serverApi = {
             throw new Error(`Whois request failed: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    async getWhois(nick) {
+        const sessionId = getSessionId();
+        if (!sessionId) {
+            throw new Error("No active session.");
+        }
+        const response = await fetch(`/api/whois?sID=${sessionId}&nick=${encodeURIComponent(nick)}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || `Whois request failed: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 

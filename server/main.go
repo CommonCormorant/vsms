@@ -50,6 +50,13 @@ type MailOutResponse struct {
 	Unread int `json:"unread"`
 }
 
+type WhoisResponse struct {
+	FirstArrived string `json:"first_arrived"`
+	Location     string `json:"location"`
+	MessageCount int    `json:"message_count"`
+	Profile      string `json:"profile"`
+}
+
 type ChatMessage struct {
 	SessionID string    `json:"session_id"`
 	Message   string    `json:"message"`
@@ -335,6 +342,7 @@ func (c *Client) readPump() {
 				continue
 			}
 			recipientNick := msgParts[2]
+			senderNick := msgParts[3]
 			originalContent := strings.Join(msgParts[4:], "|")
 
 			c.hub.sessionsMutex.Lock()
@@ -350,14 +358,15 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", c.Nickname, recipientNick, originalContent)
+				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", senderNick, recipientNick, originalContent)
 				imMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: imRelayMsg, Timestamp: time.Now(),
 				})
 				recipientClient.send <- imMsg
 			} else {
+				messageId := msgParts[len(msgParts)-1]
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + originalContent, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + originalContent + "|" + messageId, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
@@ -365,8 +374,12 @@ func (c *Client) readPump() {
 			go handleKill9Request(c.hub, c.sessionID, c.Nickname)
 
 		case "PROFILE":
-			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
-				log.Printf("Failed to save profile: %v", err)
+			if len(msgParts) > 2 {
+				profileText := strings.Join(msgParts[2:], "|")
+				profileMessage := fmt.Sprintf("PROFILE|%s|%s", c.Nickname, profileText)
+				if err := storeMessage(c.sessionID, profileMessage, c.IPAddress); err != nil {
+					log.Printf("Failed to save profile: %v", err)
+				}
 			}
 
 		case "MAIL":
@@ -835,33 +848,70 @@ func mailOutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func whoisHandler(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("sID")
 	nick := r.URL.Query().Get("nick")
-	if sessionID == "" || nick == "" {
-		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+	if nick == "" {
+		http.Error(w, "Nickname is required", http.StatusBadRequest)
 		return
 	}
 
-	var profile string
-	likePattern := fmt.Sprintf("PROFILE|%s|%%", nick)
-	err := db.QueryRow("SELECT message FROM chat_messages WHERE session_id = ? AND message LIKE ? ORDER BY created_at DESC LIMIT 1", sessionID, likePattern).Scan(&profile)
+	var response WhoisResponse
+	var firstArrived time.Time
+	var ipAddress string
+
+	// Get first message timestamp and last IP address
+	likePattern := fmt.Sprintf("%%|%s|%%", nick)
+	err := db.QueryRow("SELECT created_at, ip_address FROM chat_messages WHERE message LIKE ? ORDER BY created_at ASC LIMIT 1", likePattern).Scan(&firstArrived, &ipAddress)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "No profile found for this user.", http.StatusNotFound)
+			http.Error(w, "No activity found for this user.", http.StatusNotFound)
 		} else {
 			http.Error(w, "Database error", http.StatusInternalServerError)
 		}
 		return
 	}
+	response.FirstArrived = firstArrived.Format("Jan 2, 2006")
 
-	parts := strings.SplitN(profile, "|", 3)
-	if len(parts) < 3 {
-		http.Error(w, "Invalid profile format in database", http.StatusInternalServerError)
+	// Get message count
+	countLikePattern := fmt.Sprintf("MSG|%s|%%", nick)
+	artLikePattern := fmt.Sprintf("ART|%s|%%", nick)
+	partLikePattern := fmt.Sprintf("PART|%s|%%", nick)
+	err = db.QueryRow("SELECT COUNT(*) FROM chat_messages WHERE message LIKE ? OR message LIKE ? OR message LIKE ?", countLikePattern, artLikePattern, partLikePattern).Scan(&response.MessageCount)
+	if err != nil {
+		http.Error(w, "Database error counting messages", http.StatusInternalServerError)
 		return
 	}
 
+	// Get profile
+	profileLikePattern := fmt.Sprintf("PROFILE|%s|%%", nick)
+	var profileMessage string
+	err = db.QueryRow("SELECT message FROM chat_messages WHERE message LIKE ? ORDER BY created_at DESC LIMIT 1", profileLikePattern).Scan(&profileMessage)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error getting profile", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
+		parts := strings.SplitN(profileMessage, "|", 3)
+		if len(parts) == 3 {
+			response.Profile = parts[2]
+		}
+	}
+
+	// Get location from IP
+	geoResp, err := http.Get("https://ip-api.com/json/" + ipAddress)
+	if err != nil {
+		response.Location = "Unknown"
+	} else {
+		defer geoResp.Body.Close()
+		var geoData map[string]interface{}
+		if err := json.NewDecoder(geoResp.Body).Decode(&geoData); err == nil {
+			if city, ok := geoData["city"].(string); ok {
+				response.Location = fmt.Sprintf("The %s area", city)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"profile": parts[2]})
+	json.NewEncoder(w).Encode(response)
 }
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {

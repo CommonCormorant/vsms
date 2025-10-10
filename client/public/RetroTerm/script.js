@@ -323,7 +323,10 @@ function handleLocalCommand(input) {
             }
             if (args) {
                 const clientId = serverApi.getClientId();
-                if (!clientId) return;
+                if (!clientId) {
+                    addMessageToChat('Error: Not registered with the server yet.', 'error-message');
+                    return;
+                }
                 const profileMessage = `PROFILE|${clientId}|${args}`;
                 serverApi.sendWsMessage(profileMessage);
                 state.profile = args;
@@ -338,17 +341,18 @@ function handleLocalCommand(input) {
         case 'whois':
             if (args) {
                 const targetName = args.trim();
-                const sessionId = getSessionId();
-                if (!sessionId) {
-                    addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-                    return;
-                }
-                serverApi.whois(sessionId, targetName)
+                serverApi.getWhois(targetName)
                     .then(data => {
-                        addMessageToChat(`Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`, 'system-message');
+                        let whoisMessage = `${escapeHtml(targetName)} first arrived ${data.first_arrived}<br>`;
+                        whoisMessage += `From ${escapeHtml(data.location)}<br>`;
+                        whoisMessage += `${escapeHtml(targetName)} has sent ${data.message_count} messages<br>`;
+                        if (data.profile) {
+                            whoisMessage += `Says ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
+                        }
+                        addMessageToChat(whoisMessage, 'system-message');
                     })
                     .catch(error => {
-                        addMessageToChat(`Could not find a profile for ${escapeHtml(targetName)}.`, 'error-message');
+                        addMessageToChat(`Could not retrieve info for ${escapeHtml(targetName)}. ${error.message}`, 'error-message');
                     });
             } else {
                 addMessageToChat('Usage: /whois [nickname]', 'system-message');
@@ -463,10 +467,12 @@ function handleImCommand(recipient, message) {
         addMessageToChat('Error: Not registered with the server yet.', 'error-message');
         return;
     }
-    const imMessage = `IM|${clientId}|${recipient}|${state.userName}|${message}`;
+
+    const messageId = `im-${Date.now()}-${Math.random()}`;
+    const imMessage = `IM|${clientId}|${recipient}|${state.userName}|${message}|${messageId}`;
     serverApi.sendWsMessage(imMessage);
 
-    const messageHtml = `<b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}`;
+    const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
     addMessageToChat(messageHtml, 'private-message', true);
 }
 
@@ -1090,24 +1096,9 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        const originalMessageContent = escapeHtml(parts.slice(2).join('|'));
+        const messageId = parts[parts.length - 1]; // The ID is now the last part
 
-        // Find the message span by its generated ID.
-        // We can't pass the ID from the server, so we search for the content.
-        // This is not ideal, but it's the best we can do without a major refactor.
-        const allSentMessages = Array.from(chatOutput.querySelectorAll('p.private-message span'));
-        const targetSpan = allSentMessages.find(span => {
-            // Recreate the expected HTML of the sent message to find a match
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = span.innerHTML;
-            const boldPart = tempDiv.querySelector('b');
-            if (!boldPart) return false;
-
-            const textContent = tempDiv.textContent;
-            const expectedPrefix = `IM->${recipient}`;
-            // a bit fragile, but works for now.
-            return textContent.startsWith(expectedPrefix) && textContent.endsWith(originalMessageContent);
-        });
+        const targetSpan = document.getElementById(messageId);
 
         if (targetSpan && !targetSpan.querySelector('.error-message')) {
             const errorSpan = document.createElement('span');
@@ -1115,6 +1106,7 @@ function displayBroadcastMessage(data) {
             errorSpan.textContent = ` [Can't send: ${recipient} is not available.]`;
             targetSpan.appendChild(errorSpan);
         } else if (!targetSpan) {
+            const originalMessageContent = escapeHtml(parts.slice(2, parts.length - 1).join('|'));
             addMessageToChat(`! Your IM to ${recipient} ("${originalMessageContent}") failed to send.`, 'error-message');
         }
         return;
