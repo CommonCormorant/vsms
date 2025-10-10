@@ -758,26 +758,6 @@ chatForm.addEventListener('submit', async (e) => {
         return;
     }
 
-    if (type === 'NICK_UPDATE') {
-        const oldNick = escapeHtml(parts[1]);
-        const newNick = escapeHtml(parts[2]);
-
-        if (state.userName.toLowerCase() === oldNick.toLowerCase()) {
-            state.userName = newNick;
-            saveSettings();
-            addMessageToChat(`You are now known as ${newNick}.`, 'system-message');
-            checkForMail();
-        } else {
-            addMessageToChat(`* ${oldNick} is now known as ${newNick}.`, 'system-message');
-        }
-
-        const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === oldNick.toLowerCase());
-        if (userIndex !== -1) {
-            state.onlineUsers[userIndex] = newNick;
-        }
-        return;
-    }
-
     if (input.startsWith('.') && input.length > 1) {
         handleLocalCommand(`/name ${input.slice(1).trim()}`);
         return;
@@ -1077,6 +1057,26 @@ function displayBroadcastMessage(data) {
         const userList = parts[1] ? parts[1].split(',') : [];
         state.onlineUsers = userList.map(u => escapeHtml(u));
         addMessageToChat(`Online: ${state.onlineUsers.length > 0 ? state.onlineUsers.join(', ') : 'Just you!'}`, 'system-message');
+        return;
+    }
+
+    if (type === 'NICK_UPDATE') {
+        const oldNick = escapeHtml(parts[1]);
+        const newNick = escapeHtml(parts[2]);
+
+        if (state.userName.toLowerCase() === oldNick.toLowerCase()) {
+            state.userName = newNick;
+            saveSettings();
+            addMessageToChat(`You are now known as ${newNick}.`, 'system-message');
+            checkForMail();
+        } else {
+            addMessageToChat(`* ${oldNick} is now known as ${newNick}.`, 'system-message');
+        }
+
+        const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === oldNick.toLowerCase());
+        if (userIndex !== -1) {
+            state.onlineUsers[userIndex] = newNick;
+        }
         return;
     }
 
