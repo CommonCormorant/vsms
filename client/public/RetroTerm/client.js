@@ -1,4 +1,8 @@
 let wsConnection = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY = 1000; // 1 second
+let preventReconnect = false;
 
 const serverApi = {
     sendWsMessage(message) {
@@ -100,6 +104,10 @@ function deleteCookie(name) {
 
 function clearSessionData() {
     console.log('Clearing all session data (cookie and localStorage).');
+    preventReconnect = true; // Prevent WebSocket from trying to reconnect
+    if (wsConnection) {
+        wsConnection.close();
+    }
     localStorage.removeItem(session.SESSION_STORAGE_KEY);
     deleteCookie('sID');
     session.id = null;
@@ -162,25 +170,24 @@ function getSessionId() {
 
 function connectWebSocket(userName, onMessageCallback) {
     const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Cannot connect to real-time server without a session.', 'error-message');
+    if (!sessionId || preventReconnect) {
         return;
     }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/api/ws?sID=${sessionId}`;
 
-    const ws = new WebSocket(wsUrl);
-    wsConnection = ws; // Store the connection object
+    wsConnection = new WebSocket(wsUrl);
 
-    ws.onopen = () => {
+    wsConnection.onopen = () => {
         console.log('WebSocket connected.');
         addMessageToChat('Real-time connection established.', 'system-message');
-        // Announce our nickname to the server
-        ws.send(`NICK|${userName}`);
+        reconnectAttempts = 0; // Reset counter on successful connection
+        wsConnection.send(`NICK|${userName}`);
     };
 
-    ws.onmessage = (event) => {
+    wsConnection.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
             onMessageCallback(data);
@@ -190,22 +197,24 @@ function connectWebSocket(userName, onMessageCallback) {
         }
     };
 
-    ws.onerror = (error) => {
+    wsConnection.onerror = (error) => {
         console.error('WebSocket error:', error);
-        addMessageToChat('WebSocket connection error. Real-time updates may not work.', 'error-message');
     };
 
-    ws.onclose = (event) => {
-        console.log(`WebSocket disconnected: Code=${event.code}, Reason=${event.reason}`);
-        let errorMessage = 'Real-time connection lost.';
-        if (event.code) {
-            errorMessage += ` (Code: ${event.code}`;
-            if (event.reason) {
-                errorMessage += `, Reason: ${event.reason}`;
-            }
-            errorMessage += ')';
+    wsConnection.onclose = (event) => {
+        if (preventReconnect) {
+            console.log('WebSocket closed intentionally.');
+            return;
         }
-        errorMessage += ' Please refresh the page to reconnect.';
-        addMessageToChat(errorMessage, 'error-message');
+
+        console.log(`WebSocket disconnected: Code=${event.code}, Reason=${event.reason}`);
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts) + (Math.random() * 1000);
+            reconnectAttempts++;
+            addMessageToChat(`Connection lost. Attempting to reconnect in ${Math.round(delay / 1000)}s... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'error-message');
+            setTimeout(() => connectWebSocket(userName, onMessageCallback), delay);
+        } else {
+            addMessageToChat('Could not reconnect to the server. Please refresh the page.', 'error-message');
+        }
     };
 }

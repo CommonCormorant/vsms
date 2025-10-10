@@ -535,7 +535,7 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var messages []ChatMessage
+	messages := make([]ChatMessage, 0)
 	for rows.Next() {
 		var msg ChatMessage
 		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {
@@ -568,7 +568,7 @@ func archiveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var messages []ChatMessage
+	messages := make([]ChatMessage, 0)
 	for rows.Next() {
 		var msg ChatMessage
 		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {

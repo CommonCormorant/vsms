@@ -666,13 +666,18 @@ async function handleHistoryCommand(args) {
     addMessageToChat(`Fetching history for the last ${minutes} minute(s)...`, 'system-message');
     try {
         const history = await serverApi.getHistory(getSessionId(), minutes);
-        const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
-        if (filteredHistory && filteredHistory.length > 0) {
-            addMessageToChat('--- Start of History ---', 'system-message');
-            filteredHistory.forEach(displayBroadcastMessage);
-            addMessageToChat('--- End of History ---', 'system-message');
+        if (Array.isArray(history)) {
+            const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
+            if (filteredHistory.length > 0) {
+                addMessageToChat('--- Start of History ---', 'system-message');
+                filteredHistory.forEach(displayBroadcastMessage);
+                addMessageToChat('--- End of History ---', 'system-message');
+            } else {
+                addMessageToChat(`No messages in the last ${minutes} minute(s).`, 'system-message');
+            }
         } else {
-            addMessageToChat('No history found for this session.', 'system-message');
+            // Handle cases where the API might not return an array (e.g., null or error object)
+            addMessageToChat(`No messages in the last ${minutes} minute(s).`, 'system-message');
         }
     } catch (error) {
         addMessageToChat(`Error fetching history: ${error.message}`, 'error-message');
@@ -683,13 +688,17 @@ async function handleArchiveCommand() {
     addMessageToChat(`Fetching full message archive...`, 'system-message');
     try {
         const history = await serverApi.getArchive(getSessionId());
-        const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
-        if (filteredHistory && filteredHistory.length > 0) {
-            addMessageToChat('--- Start of Archive ---', 'system-message');
-            filteredHistory.forEach(displayBroadcastMessage);
-            addMessageToChat('--- End of Archive ---', 'system-message');
+        if (Array.isArray(history)) {
+            const filteredHistory = history.filter(item => !item.message.startsWith('MAIL|'));
+            if (filteredHistory.length > 0) {
+                addMessageToChat('--- Start of Archive ---', 'system-message');
+                filteredHistory.forEach(displayBroadcastMessage);
+                addMessageToChat('--- End of Archive ---', 'system-message');
+            } else {
+                addMessageToChat('The archive is empty.', 'system-message');
+            }
         } else {
-            addMessageToChat('No archive found for this session.', 'system-message');
+            addMessageToChat('The archive is empty.', 'system-message');
         }
     } catch (error) {
         addMessageToChat(`Error fetching archive: ${error.message}`, 'error-message');
