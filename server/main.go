@@ -663,7 +663,7 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 
 	timeLimit := time.Now().Add(-time.Duration(minutes) * time.Minute)
 
-	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND created_at >= ? ORDER BY created_at ASC", sessionID, timeLimit)
+	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND created_at >= ? AND message NOT LIKE 'PROFILE|%' ORDER BY created_at ASC", sessionID, timeLimit)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
