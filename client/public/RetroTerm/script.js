@@ -442,7 +442,7 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
+    const imMessage = `IM|${recipient}|${message}`;
     serverApi.sendWsMessage(imMessage);
     addMessageToChat(`> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
 }

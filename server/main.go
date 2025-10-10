@@ -246,10 +246,12 @@ func (c *Client) readPump() {
 		// Route message based on type
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 4 {
+			if len(msgParts) < 3 { // IM|recipient|message
 				continue
 			}
 			recipientNick := msgParts[1]
+			messageContent := strings.Join(msgParts[2:], "|")
+
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
 			if session, ok := c.hub.sessions[c.sessionID]; ok {
@@ -263,11 +265,13 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				imMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: msgString, Timestamp: time.Now(),
+				// Reconstruct the message with the SENDER's nickname for security and correctness
+				imMsgString := fmt.Sprintf("IM|%s|%s", c.Nickname, messageContent)
+				imMsgJson, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: imMsgString, Timestamp: time.Now(),
 				})
 				select {
-				case recipientClient.send <- imMsg:
+				case recipientClient.send <- imMsgJson:
 				default:
 					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
 				}
