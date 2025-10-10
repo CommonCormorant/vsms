@@ -95,6 +95,14 @@ const serverApi = {
             throw new Error(`Mail out check failed: ${response.statusText}`);
         }
         return response.json();
+    },
+
+    async whois(session_id, nick) {
+        const response = await fetch(`/api/whois?sID=${session_id}&nick=${encodeURIComponent(nick)}`);
+        if (!response.ok) {
+            throw new Error(`Whois request failed: ${response.statusText}`);
+        }
+        return response.json();
     }
 };
 

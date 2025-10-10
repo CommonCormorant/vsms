@@ -364,6 +364,11 @@ func (c *Client) readPump() {
 		case "KILL9":
 			go handleKill9Request(c.hub, c.sessionID, c.Nickname)
 
+		case "PROFILE":
+			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
+				log.Printf("Failed to save profile: %v", err)
+			}
+
 		case "MAIL":
 			// Mail is now sent with the stable ID, but the content format is the same
 			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
@@ -461,6 +466,7 @@ for from, to := range redirects {
 	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
 	api.HandleFunc("/mail/check", mailCheckHandler).Methods("GET")
 	api.HandleFunc("/mail/out", mailOutHandler).Methods("GET")
+	api.HandleFunc("/whois", whoisHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -826,6 +832,36 @@ func mailOutHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func whoisHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	nick := r.URL.Query().Get("nick")
+	if sessionID == "" || nick == "" {
+		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+		return
+	}
+
+	var profile string
+	likePattern := fmt.Sprintf("PROFILE|%s|%%", nick)
+	err := db.QueryRow("SELECT message FROM chat_messages WHERE session_id = ? AND message LIKE ? ORDER BY created_at DESC LIMIT 1", sessionID, likePattern).Scan(&profile)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "No profile found for this user.", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	parts := strings.SplitN(profile, "|", 3)
+	if len(parts) < 3 {
+		http.Error(w, "Invalid profile format in database", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"profile": parts[2]})
 }
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {

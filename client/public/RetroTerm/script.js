@@ -322,6 +322,10 @@ function handleLocalCommand(input) {
                 return;
             }
             if (args) {
+                const clientId = serverApi.getClientId();
+                if (!clientId) return;
+                const profileMessage = `PROFILE|${clientId}|${args}`;
+                serverApi.sendWsMessage(profileMessage);
                 state.profile = args;
                 saveSettings();
                 addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
@@ -334,15 +338,18 @@ function handleLocalCommand(input) {
         case 'whois':
             if (args) {
                 const targetName = args.trim();
-                if (targetName.toLowerCase() === state.userName.toLowerCase()) {
-                    const timeAgo = getTimeSinceJoin(state.joinTime);
-                    addMessageToChat(`${escapeHtml(state.userName)} joined ${timeAgo} ago.`, 'system-message');
-                    if (state.profile) {
-                        addMessageToChat(`Says ${escapeHtml(state.userName)}, "${escapeHtml(state.profile)}"`, 'system-message');
-                    }
-                } else {
-                    addMessageToChat(`User "${escapeHtml(targetName)}" not found. Whois is local and can only see yourself.`, 'system-message');
+                const sessionId = getSessionId();
+                if (!sessionId) {
+                    addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+                    return;
                 }
+                serverApi.whois(sessionId, targetName)
+                    .then(data => {
+                        addMessageToChat(`Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`, 'system-message');
+                    })
+                    .catch(error => {
+                        addMessageToChat(`Could not find a profile for ${escapeHtml(targetName)}.`, 'error-message');
+                    });
             } else {
                 addMessageToChat('Usage: /whois [nickname]', 'system-message');
             }
