@@ -1060,10 +1060,9 @@ function displayBroadcastMessage(data) {
                 return; // Not for us
             }
 
-            // Format is MAIL|SENDER|RECIPIENT|CONTENT|ENC_FLAG|READ_STATUS
-            // So content is parts[3] and enc_flag is parts[4]
-            let mailContent = parts[3];
-            const encryptionFlag = parts[4];
+            // Format: MAIL|SENDER|RECIPIENT|...CONTENT...|ENC_FLAG|READ_STATUS
+            const encryptionFlag = parts[parts.length - 2];
+            let mailContent = parts.slice(3, parts.length - 2).join('|');
 
             if (decryption[encryptionFlag]) {
                 mailContent = decryption[encryptionFlag](mailContent);

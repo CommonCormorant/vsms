@@ -408,7 +408,8 @@ func initDB() {
 	}
 
 	// Configure the connection pool
-	db.SetConnMaxLifetime(time.Minute * 1)
+	db.SetConnMaxLifetime(time.Minute * 3) // Keep this to recycle connections periodically
+	db.SetConnMaxIdleTime(time.Minute * 1) // Close connections that are idle for a minute
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(10)
 
