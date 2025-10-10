@@ -282,7 +282,10 @@ func (c *Client) readPump() {
 				userName := msgParts[1]
 				go handleKill9Request(c.hub, c.sessionID, userName)
 			}
-		case "MSG", "EMOTE", "ART", "PART", "MAIL", "ROLL", "FLIP", "ECHO":
+		case "MAIL":
+			// Mail is stored but NOT broadcast
+			storeMessage(c.sessionID, msgString, c.IPAddress)
+		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
 			// For all other message types, store and broadcast.
 			broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress)
 		default:
@@ -603,63 +606,102 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	likePattern := "MAIL|%|U"
-	rows, err := tx.Query("SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND message LIKE ?", sessionID, likePattern)
+	query := `SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND (
+		message LIKE '%|U' OR
+		message LIKE '%|x' OR
+		message LIKE '%|rx' OR
+		message LIKE '%|xx' OR
+		message LIKE '%|xr'
+	)`
+	rows, err := tx.Query(query, sessionID)
 	if err != nil {
-		log.Printf("Database query error: %v", err)
+		log.Printf("Database query error in mailCheckHandler: %v", err)
 		http.Error(w, "Database query error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var messages []ChatMessage
-	var messageIDs []int
+	messagesToDeliver := make([]ChatMessage, 0)
+	var messagesToUpdate []struct {
+		ID     int
+		NewMsg string
+	}
+
 	for rows.Next() {
 		var msg ChatMessage
 		var id int
 		if err := rows.Scan(&id, &msg.Message, &msg.Timestamp); err != nil {
-			log.Printf("Failed to scan message row: %v", err)
-			http.Error(w, "Failed to scan message row", http.StatusInternalServerError)
-			return
+			log.Printf("Failed to scan message row in mailCheckHandler: %v", err)
+			continue
 		}
-		// Server-side filtering to ensure recipient matches
+
 		parts := strings.Split(msg.Message, "|")
-		if len(parts) >= 5 && parts[0] == "MAIL" && strings.EqualFold(parts[2], recipientNick) {
+		if len(parts) < 4 || parts[0] != "MAIL" {
+			continue // Not a mail message
+		}
+
+		msgRecipient := parts[2]
+		if strings.EqualFold(msgRecipient, recipientNick) {
+			flag := parts[len(parts)-1]
+			var newFlag string
+
+			switch flag {
+			case "U":
+				newFlag = "R"
+			case "x":
+				newFlag = "r_x"
+			case "rx":
+				newFlag = "r_rx"
+			case "xx":
+				newFlag = "r_xx"
+			case "xr":
+				newFlag = "r_xr"
+			default:
+				continue // Already read or unknown flag
+			}
+
+			newMsg := strings.TrimSuffix(msg.Message, "|"+flag) + "|" + newFlag
+			messagesToUpdate = append(messagesToUpdate, struct {
+				ID     int
+				NewMsg string
+			}{id, newMsg})
+
 			msg.SessionID = sessionID
-			messages = append(messages, msg)
-			messageIDs = append(messageIDs, id)
+			messagesToDeliver = append(messagesToDeliver, msg)
 		}
 	}
+
 	if err := rows.Err(); err != nil {
-		log.Printf("Row iteration error: %v", err)
+		log.Printf("Row iteration error in mailCheckHandler: %v", err)
 		http.Error(w, "Row iteration error", http.StatusInternalServerError)
 		return
 	}
 
-	if len(messageIDs) > 0 {
-		args := make([]interface{}, len(messageIDs))
-		for i, v := range messageIDs {
-			args[i] = v
-		}
-		// Use REPLACE to change the status from Unread to Read
-		stmt := "UPDATE chat_messages SET message = REPLACE(message, '|U', '|R') WHERE id IN (?" + strings.Repeat(",?", len(messageIDs)-1) + ")"
-
-		_, err := tx.Exec(stmt, args...)
+	if len(messagesToUpdate) > 0 {
+		stmt, err := tx.Prepare("UPDATE chat_messages SET message = ? WHERE id = ?")
 		if err != nil {
-			log.Printf("Failed to update message status: %v", err)
-			http.Error(w, "Failed to update message status", http.StatusInternalServerError)
+			log.Printf("Failed to prepare update statement in mailCheckHandler: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
+		}
+		defer stmt.Close()
+
+		for _, update := range messagesToUpdate {
+			_, err := stmt.Exec(update.NewMsg, update.ID)
+			if err != nil {
+				log.Printf("Failed to update message status for ID %d: %v", update.ID, err)
+			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		log.Printf("Failed to commit transaction: %v", err)
+		log.Printf("Failed to commit transaction in mailCheckHandler: %v", err)
 		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(messages)
+	json.NewEncoder(w).Encode(messagesToDeliver)
 }
 
 func mailOutHandler(w http.ResponseWriter, r *http.Request) {
@@ -734,6 +776,19 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	go client.writePump()
 	go client.readPump()
+}
+
+func storeMessage(sessionID, message, ipAddress string) {
+	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
+	if err != nil {
+		log.Printf("Database error on storeMessage prep: %v", err)
+		return
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	if err != nil {
+		log.Printf("Failed to save message: %v", err)
+	}
 }
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) {
