@@ -350,17 +350,6 @@ func (c *Client) writePump() {
 	}
 }
 
-// --- Middleware ---
-
-func noCache(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-		h.ServeHTTP(w, r)
-	})
-}
-
 // --- Main Function ---
 
 func main() {
@@ -381,11 +370,10 @@ func main() {
 
 // --- Serve RetroTerm page under multiple aliases ---
 retroTermDir := http.Dir("../client/public/RetroTerm")
-noCacheFileServer := noCache(http.FileServer(retroTermDir))
 
 aliases := []string{"/rt/", "/chat/", "/RetroTerm/", "/retroTerm/", "/term/", "/terminal/"}
 for _, alias := range aliases {
-    r.PathPrefix(alias).Handler(http.StripPrefix(alias, noCacheFileServer))
+    r.PathPrefix(alias).Handler(http.StripPrefix(alias, http.FileServer(retroTermDir)))
 }
 
 // --- Redirect non-trailing-slash URLs to trailing-slash versions ---
@@ -815,16 +803,6 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func storeMessage(sessionID, message, ipAddress string) error {
-	// Ping the database to ensure the connection is alive before executing the query.
-	if err := db.Ping(); err != nil {
-		log.Printf("Database ping failed: %v", err)
-		// Try to re-establish the connection.
-		initDB()
-		if err := db.Ping(); err != nil {
-			log.Printf("Database reconnect failed: %v", err)
-			return err // Return error if reconnect fails
-		}
-	}
 	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
@@ -834,15 +812,7 @@ func storeMessage(sessionID, message, ipAddress string) error {
 }
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
-	// Store the message in the database and capture any error.
-	dbErr := storeMessage(sessionID, message, ipAddress)
-	if dbErr != nil {
-		log.Printf("Failed to save broadcast message: %v", dbErr)
-		// We'll still attempt to broadcast the message to the session,
-		// but we will return the database error to the originating client.
-	}
-
-	// Broadcast the message to all clients in the session via the hub.
+	// Broadcast the message to all clients in the session via the hub first.
 	jsonMsg, err := json.Marshal(ChatMessage{
 		SessionID: sessionID,
 		Message:   message,
@@ -854,7 +824,13 @@ func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
 		log.Printf("Failed to marshal broadcast message for hub: %v", err)
 	}
 
-	// Return the original database error, if there was one.
+	// Then, store the message in the database.
+	dbErr := storeMessage(sessionID, message, ipAddress)
+	if dbErr != nil {
+		log.Printf("Failed to save broadcast message: %v", dbErr)
+	}
+
+	// Return the database error, if any, to the originating client.
 	return dbErr
 }
 

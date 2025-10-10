@@ -200,17 +200,20 @@ function parseMarkdown(text) {
     return html;
 }
 
-function addMessageToChat(htmlContent, className = '', addToHistory = false) {
+function addMessageToChat(htmlContent, className = '', addToHistory = false, messageId = null) {
     const p = document.createElement('p');
     if (className) {
         p.className = className;
     }
+    if (messageId) {
+        p.id = messageId;
+    }
     p.innerHTML = htmlContent;
     chatOutput.appendChild(p);
     scrollToBottom();
-    
+
     if (addToHistory) {
-        state.messageHistory.push({ content: htmlContent, className: className });
+        state.messageHistory.push({ content: htmlContent, className: className, id: messageId });
         if (state.messageHistory.length > 12) {
             state.messageHistory.shift();
         }
@@ -442,10 +445,11 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const imMessage = `IM|${recipient}|${message}`;
+    const messageId = `im-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const imMessage = `IM|${recipient}|${message}|${messageId}`;
     serverApi.sendWsMessage(imMessage);
     const sentImHtml = `> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`;
-    addMessageToChat(sentImHtml, 'private-message', true); // Add to history
+    addMessageToChat(sentImHtml, 'private-message', true, messageId);
 }
 
 async function checkForMail() {
@@ -1044,9 +1048,11 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        const originalMessage = escapeHtml(parts.slice(2).join('|'));
-        const failHtml = `> [IM to ${recipient}]: ${originalMessage} <span style="color: var(--system-color-dark-gray);">[Fail: ${recipient} isn't here]</span>`;
-        addMessageToChat(failHtml, 'private-message-fail', true);
+        const messageId = parts[parts.length - 1];
+        const originalMessageElement = document.getElementById(messageId);
+        if (originalMessageElement) {
+            originalMessageElement.innerHTML += ` <span class="private-message-fail">[Not sent. Reason: user not online]</span>`;
+        }
         return;
     }
 
