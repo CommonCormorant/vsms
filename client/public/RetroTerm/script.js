@@ -507,8 +507,8 @@ function handleEncryptedMessageCommand(type, recipient, message) {
 }
 
 function handleMessageCommand(recipient, message) {
-    // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE|U
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}|U`;
+    // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE||U
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}||U`;
     serverApi.sendWsMessage(mailMessage);
     addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
 }
@@ -996,6 +996,18 @@ function displayBroadcastMessage(data) {
     const { message } = data;
     const parts = message.split('|');
     const type = parts[0];
+
+    if (type === 'STORE_FAILED') {
+        const errorMessage = parts.slice(1).join('|');
+        addMessageToChat(`! Server Error: Could not save message. Reason: ${escapeHtml(errorMessage)}`, 'error-message');
+        return;
+    }
+
+    if (type === 'STORE_FAILED') {
+        const errorMessage = parts.slice(1).join('|');
+        addMessageToChat(`! Server Error: Could not save message. Reason: ${escapeHtml(errorMessage)}`, 'error-message');
+        return;
+    }
 
     if (type === 'KILL9_DB_ERROR') {
         addMessageToChat('***CRITICAL SERVER ERROR: Failed to delete session.***', 'error-message');

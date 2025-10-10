@@ -284,10 +284,32 @@ func (c *Client) readPump() {
 			}
 		case "MAIL":
 			// Mail is stored but NOT broadcast
-			storeMessage(c.sessionID, msgString, c.IPAddress)
+			if err := storeMessage(c.sessionID, msgString, c.IPAddress, "MAIL"); err != nil {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID,
+					Message:   "STORE_FAILED|" + err.Error(),
+					Timestamp: time.Now(),
+				})
+				select {
+				case c.send <- failMsg:
+				default:
+					log.Printf("Failed to send STORE_FAILED to %s, channel is full or closed.", c.Nickname)
+				}
+			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
 			// For all other message types, store and broadcast.
-			broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress)
+			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress, "LOBBY"); err != nil {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID,
+					Message:   "STORE_FAILED|" + err.Error(),
+					Timestamp: time.Now(),
+				})
+				select {
+				case c.send <- failMsg:
+				default:
+					log.Printf("Failed to send STORE_FAILED to %s, channel is full or closed.", c.Nickname)
+				}
+			}
 		default:
 			log.Printf("Unknown message type received: %s", msgType)
 		}
@@ -384,6 +406,12 @@ func initDB() {
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)
 	}
+
+	// Configure the connection pool
+	db.SetConnMaxLifetime(time.Minute * 3)
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
+
 	if err = db.Ping(); err != nil {
 		log.Fatalf("Error connecting to database: %v", err)
 	}
@@ -780,31 +808,33 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-func storeMessage(sessionID, message, ipAddress string) {
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
+func storeMessage(sessionID, message, ipAddress, channel string) error {
+	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at, channel) VALUES(?, ?, ?, ?, ?)")
 	if err != nil {
 		log.Printf("Database error on storeMessage prep: %v", err)
-		return
+		return err
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now(), channel)
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
+		return err
 	}
+	return nil
 }
 
-func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) {
+func broadcastAndStore(hub *Hub, sessionID, message, ipAddress, channel string) error {
 	// Store the message in the database
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
+	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at, channel) VALUES(?, ?, ?, ?, ?)")
 	if err != nil {
 		log.Printf("Database error on broadcastAndStore prep: %v", err)
-		return
+		return err
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now(), channel)
 	if err != nil {
 		log.Printf("Failed to save broadcast message: %v", err)
-		// Continue to broadcast even if save fails
+		return err
 	}
 
 	// Broadcast the message via WebSocket
@@ -818,6 +848,7 @@ func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) {
 	} else {
 		log.Printf("Failed to marshal broadcast message: %v", err)
 	}
+	return nil
 }
 
 func handleKill9Request(hub *Hub, sessionID string, userName string) {
