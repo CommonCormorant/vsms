@@ -734,7 +734,6 @@ chatForm.addEventListener('submit', async (e) => {
         const oldNick = escapeHtml(parts[1]);
         const newNick = escapeHtml(parts[2]);
 
-        // Update the current user's name if it matches the old nick
         if (state.userName.toLowerCase() === oldNick.toLowerCase()) {
             state.userName = newNick;
             saveSettings();
@@ -744,7 +743,6 @@ chatForm.addEventListener('submit', async (e) => {
             addMessageToChat(`* ${oldNick} is now known as ${newNick}.`, 'system-message');
         }
 
-        // Update the online users list
         const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === oldNick.toLowerCase());
         if (userIndex !== -1) {
             state.onlineUsers[userIndex] = newNick;
