@@ -237,6 +237,11 @@ function handleLocalCommand(input) {
     switch (command) {
         case 'name':
         case 'nick':
+            const clientId = serverApi.getClientId();
+            if (!clientId) {
+                addMessageToChat('Error: Not registered with the server yet.', 'error-message');
+                return;
+            }
             let newName = args;
             if (!newName) {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
@@ -247,8 +252,7 @@ function handleLocalCommand(input) {
             if (newName.includes(',') || newName.includes('!')) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
             } else {
-                // Send the request to the server. The server will broadcast the update.
-                const nickMessage = `NICK|${newName}`;
+                const nickMessage = `NICK|${clientId}|${newName}`;
                 serverApi.sendWsMessage(nickMessage);
             }
             break;
@@ -439,12 +443,15 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
+    const clientId = serverApi.getClientId();
+    if (!clientId) {
+        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
+        return;
+    }
+    const imMessage = `IM|${clientId}|${recipient}|${state.userName}|${message}`;
     serverApi.sendWsMessage(imMessage);
 
-    // Create a unique ID for this message to find it later if it fails
-    const messageId = `im-${Date.now()}-${Math.random()}`;
-    const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
+    const messageHtml = `<b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}`;
     addMessageToChat(messageHtml, 'private-message', true);
 }
 
@@ -488,6 +495,11 @@ async function handleMailOutCommand() {
 }
 
 function handleEncryptedMessageCommand(type, recipient, message) {
+    const clientId = serverApi.getClientId();
+    if (!clientId) {
+        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
+        return;
+    }
     const flags = {
         enc: 'x',
         encr: 'rx',
@@ -502,16 +514,18 @@ function handleEncryptedMessageCommand(type, recipient, message) {
     }
 
     const encryptedMessage = encryption[type](message);
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
+    const mailMessage = `MAIL|${clientId}|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
     serverApi.sendWsMessage(mailMessage);
-    // The confirmation message is now handled by STORE_SUCCESS
 }
 
 function handleMessageCommand(recipient, message) {
-    // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE||U
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}||U`;
+    const clientId = serverApi.getClientId();
+    if (!clientId) {
+        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
+        return;
+    }
+    const mailMessage = `MAIL|${clientId}|${state.userName}|${recipient}|${message}||U`;
     serverApi.sendWsMessage(mailMessage);
-    // The confirmation message is now handled by STORE_SUCCESS
 }
 
 function convertToHex(text) {
@@ -579,74 +593,57 @@ function showHelp() {
 }
 
 function handleMessage(message) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const prefixedMessage = `MSG|${state.userName}|${message}`;
+    const clientId = serverApi.getClientId();
+    if (!clientId) return;
+    const prefixedMessage = `MSG|${clientId}|${message}`;
     serverApi.sendWsMessage(prefixedMessage);
 }
 
 function handleEmote(action) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const emoteMessage = `EMOTE|${state.userName}|${action}`;
+    const clientId = serverApi.getClientId();
+    if (!clientId) return;
+    const emoteMessage = `EMOTE|${clientId}|${action}`;
     serverApi.sendWsMessage(emoteMessage);
 }
 
 function handleArt(artContent) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
-    const artMessage = `ART|${state.userName}|${artContent}`;
+    const clientId = serverApi.getClientId();
+    if (!clientId) return;
+    const artMessage = `ART|${clientId}|${artContent}`;
     serverApi.sendWsMessage(artMessage);
     artWidget.classList.add('hidden');
 }
 window.sendArt = handleArt;
 
 function handleParagraphArt(content) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
+    const clientId = serverApi.getClientId();
+    if (!clientId) return;
     const processedContent = content.replace(/\n/g, '¶');
-    const partMessage = `PART|${state.userName}|${processedContent}`;
+    const partMessage = `PART|${clientId}|${processedContent}`;
     serverApi.sendWsMessage(partMessage);
     pArtWidget.classList.add('hidden');
     pArtTextarea.value = '';
 }
 
 function handleBroadcastCommand(command, args) {
-    const sessionId = getSessionId();
-    if (!sessionId) {
-        addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return;
-    }
+    const clientId = serverApi.getClientId();
+    if (!clientId) return;
 
-    let prefixedMessage = '';
-
+    let content = '';
     switch (command) {
         case 'roll':
             const sides = args ? parseInt(args) : 6;
             if (isNaN(sides) || sides < 2) return;
             const result = Math.floor(Math.random() * sides) + 1;
-            prefixedMessage = `ROLL|${state.userName}|d${sides} ${result}`;
+            content = `d${sides} ${result}`;
             break;
         case 'flip':
-            const coin = Math.random() < 0.5 ? 'Heads' : 'Tails';
-            prefixedMessage = `FLIP|${state.userName}|${coin}`;
+            content = Math.random() < 0.5 ? 'Heads' : 'Tails';
             break;
         default:
             return;
     }
-
+    const prefixedMessage = `${command.toUpperCase()}|${clientId}|${content}`;
     serverApi.sendWsMessage(prefixedMessage);
 }
 
@@ -724,7 +721,9 @@ chatForm.addEventListener('submit', async (e) => {
     if (input.startsWith('%')) {
         const echoText = input.slice(1).trim();
         if (echoText) {
-            const prefixedMessage = `ECHO||${echoText}`;
+            const clientId = serverApi.getClientId();
+            if (!clientId) return;
+            const prefixedMessage = `ECHO|${clientId}|${echoText}`;
             serverApi.sendWsMessage(prefixedMessage);
         }
         return;
@@ -886,11 +885,11 @@ chatForm.addEventListener('submit', async (e) => {
                     window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
                 }, 1000);
             } else if (args === '9') {
-                const sessionId = getSessionId();
-                if (!sessionId) {
-                    addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
+                const clientId = serverApi.getClientId();
+                if (!clientId) {
+                    addMessageToChat('Error: Not registered with server.', 'error-message');
                 } else {
-                    const killMessage = `KILL9|${state.userName}|`;
+                    const killMessage = `KILL9|${clientId}`;
                     serverApi.sendWsMessage(killMessage);
                 }
             }
@@ -1228,7 +1227,13 @@ async function initializeApp() {
             handleEmote("has joined.");
         } : null;
 
-        connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback);
+        const onRegistrationComplete = (finalNickname) => {
+            state.userName = finalNickname;
+            saveSettings();
+            addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+        };
+
+        connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
 
         // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');

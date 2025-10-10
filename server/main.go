@@ -93,6 +93,32 @@ func newHub() *Hub {
 	}
 }
 
+func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
+	h.sessionsMutex.Lock()
+	defer h.sessionsMutex.Unlock()
+
+	finalNick := requestedNick
+	suffix := 1
+	isTaken := true
+
+	for isTaken {
+		isTaken = false
+		if session, ok := h.sessions[sessionID]; ok {
+			for client := range session {
+				if strings.EqualFold(client.Nickname, finalNick) {
+					isTaken = true
+					break
+				}
+			}
+		}
+		if isTaken {
+			finalNick = fmt.Sprintf("%s_%d", requestedNick, suffix)
+			suffix++
+		}
+	}
+	return finalNick
+}
+
 func (h *Hub) run() {
 	for {
 		select {
@@ -198,7 +224,8 @@ type Client struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	sessionID string
-	Nickname  string
+	ID        string // Stable, unique identifier for the client
+	Nickname  string // Mutable, user-facing name
 	IPAddress string
 }
 
@@ -208,8 +235,41 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
-	isRegistered := false // New state flag
+	// 1. Initial message must be a NICK announcement.
+	_, initialMsg, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading initial nick message: %v", err)
+		return
+	}
 
+	initialParts := strings.Split(string(initialMsg), "|")
+	if len(initialParts) != 2 || initialParts[0] != "NICK" {
+		log.Printf("First message was not a valid NICK announcement: %s", string(initialMsg))
+		return
+	}
+
+	requestedNick := initialParts[1]
+	if strings.Contains(requestedNick, ",") || strings.Contains(requestedNick, "!") {
+		log.Printf("Connection rejected for invalid nickname: %s", requestedNick)
+		return
+	}
+
+	// 2. Assign a stable ID and a unique nickname.
+	c.ID = fmt.Sprintf("%x", sha256.Sum256([]byte(c.IPAddress+c.sessionID)))
+	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
+
+	// 3. Register the client with the hub.
+	c.hub.register <- c
+
+	// 4. Send a REGISTERED message back to the client with their stable ID and final nickname.
+	registeredMsg, _ := json.Marshal(ChatMessage{
+		SessionID: c.sessionID,
+		Message:   fmt.Sprintf("REGISTERED|%s|%s", c.ID, c.Nickname),
+		Timestamp: time.Now(),
+	})
+	c.send <- registeredMsg
+
+	// 5. Main message loop. All subsequent messages must include the client's stable ID.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -221,46 +281,40 @@ func (c *Client) readPump() {
 
 		msgString := string(msgBytes)
 		msgParts := strings.Split(msgString, "|")
-		msgType := msgParts[0]
-
-		if !isRegistered {
-			if msgType == "NICK" && len(msgParts) == 2 {
-				nickname := msgParts[1]
-				if !strings.Contains(nickname, ",") && !strings.Contains(nickname, "!") {
-					c.Nickname = nickname
-					c.hub.register <- c
-					isRegistered = true
-					log.Printf("Client registered with Nick: %s", nickname)
-					continue
-				}
-				log.Printf("Connection rejected for invalid nickname: %s", nickname)
-			} else {
-				log.Printf("Connection rejected. First message was not a valid NICK announcement: %s", msgString)
-			}
-			break
+		if len(msgParts) < 2 {
+			log.Printf("Invalid message format received: %s", msgString)
+			continue
 		}
 
+		// The second part of the message must now be the client's stable ID.
+		clientID := msgParts[1]
+		if clientID != c.ID {
+			log.Printf("Message with invalid client ID received. Expected %s, got %s", c.ID, clientID)
+			continue
+		}
+
+		msgType := msgParts[0]
 		switch msgType {
 		case "NICK":
-			if len(msgParts) == 2 {
-				newName := msgParts[1]
+			if len(msgParts) == 3 {
+				newName := c.hub.getAvailableNickname(c.sessionID, msgParts[2])
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
 					oldName := c.Nickname
 					c.Nickname = newName
 					updateMsg := fmt.Sprintf("NICK_UPDATE|%s|%s", oldName, newName)
 					jsonMsg, _ := json.Marshal(ChatMessage{
-						SessionID: c.sessionID,
-						Message:   updateMsg,
-						Timestamp: time.Now(),
+						SessionID: c.sessionID, Message: updateMsg, Timestamp: time.Now(),
 					})
 					c.hub.broadcast <- BroadcastMessage{SessionID: c.sessionID, Message: jsonMsg}
 				}
 			}
 		case "IM":
-			if len(msgParts) < 4 {
+			if len(msgParts) < 5 {
 				continue
 			}
-			recipientNick := msgParts[1]
+			recipientNick := msgParts[2]
+			originalContent := strings.Join(msgParts[4:], "|")
+
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
 			if session, ok := c.hub.sessions[c.sessionID]; ok {
@@ -274,63 +328,42 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
+				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", c.Nickname, recipientNick, originalContent)
 				imMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: msgString, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: imRelayMsg, Timestamp: time.Now(),
 				})
-				select {
-				case recipientClient.send <- imMsg:
-				default:
-					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
-				}
+				recipientClient.send <- imMsg
 			} else {
-				originalContent := strings.Join(msgParts[3:], "|")
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + originalContent, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
 		case "KILL9":
-			if len(msgParts) > 1 {
-				userName := msgParts[1]
-				go handleKill9Request(c.hub, c.sessionID, userName)
-			}
+			go handleKill9Request(c.hub, c.sessionID, c.Nickname)
+
 		case "MAIL":
+			// Mail is now sent with the stable ID, but the content format is the same
 			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID,
-					Message:   "STORE_FAILED|" + err.Error(),
-					Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
 				})
-				select {
-				case c.send <- failMsg:
-				default:
-					log.Printf("Failed to send STORE_FAILED to %s, channel is full or closed.", c.Nickname)
-				}
+				c.send <- failMsg
 			} else {
-				recipientNick := msgParts[2]
+				recipientNick := msgParts[3]
 				successMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID,
-					Message:   "STORE_SUCCESS|" + recipientNick,
-					Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "STORE_SUCCESS|" + recipientNick, Timestamp: time.Now(),
 				})
-				select {
-				case c.send <- successMsg:
-				default:
-					log.Printf("Failed to send STORE_SUCCESS to %s, channel is full or closed.", c.Nickname)
-				}
+				c.send <- successMsg
 			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
-			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress); err != nil {
+			// Reconstruct message with nickname instead of ID for broadcast
+			broadcastMsg := fmt.Sprintf("%s|%s|%s", msgType, c.Nickname, strings.Join(msgParts[2:], "|"))
+			if err := broadcastAndStore(c.hub, c.sessionID, broadcastMsg, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID,
-					Message:   "STORE_FAILED|" + err.Error(),
-					Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
 				})
-				select {
-				case c.send <- failMsg:
-				default:
-					log.Printf("Failed to send STORE_FAILED to %s, channel is full or closed.", c.Nickname)
-				}
+				c.send <- failMsg
 			}
 		default:
 			log.Printf("Unknown message type received: %s", msgType)

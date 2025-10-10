@@ -3,8 +3,13 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 1000; // 1 second
 let preventReconnect = false;
+let clientId = null; // To store the stable client ID from the server
 
 const serverApi = {
+    getClientId() {
+        return clientId;
+    },
+
     sendWsMessage(message) {
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
             wsConnection.send(message);
@@ -180,20 +185,48 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback) {
 
     wsConnection = new WebSocket(wsUrl);
 
+    let isRegistered = false;
+
     wsConnection.onopen = () => {
-        console.log('WebSocket connected.');
-        addMessageToChat('Real-time connection established.', 'system-message');
-        reconnectAttempts = 0; // Reset counter on successful connection
+        console.log('WebSocket connection opened, sending NICK...');
         wsConnection.send(`NICK|${getUsername()}`);
-        if (onOpenCallback) {
-            onOpenCallback();
-        }
     };
 
     wsConnection.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            const parts = data.message.split('|');
+            const type = parts[0];
+
+            if (!isRegistered) {
+                if (type === 'REGISTERED') {
+                    clientId = parts[1];
+                    const finalNickname = parts[2];
+
+                    console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
+                    addMessageToChat('Real-time connection established.', 'system-message');
+                    reconnectAttempts = 0; // Reset on successful registration
+                    isRegistered = true;
+
+                    // Update the local state with the server-confirmed nickname
+                    if (onRegistrationComplete) {
+                        onRegistrationComplete(finalNickname);
+                    }
+
+                    // Trigger the original onOpen callback now that we are fully registered
+                    if (onOpenCallback) {
+                        onOpenCallback();
+                    }
+                } else {
+                    console.error('Expected REGISTERED message, but got:', data.message);
+                    wsConnection.close();
+                }
+                return; // Don't process further until registered
+            }
+
+            // After registration, pass all messages to the main callback
             onMessageCallback(data);
+
         } catch (error) {
             console.error('Error parsing WebSocket message:', error);
             console.log('Received non-JSON message from WebSocket:', event.data);
