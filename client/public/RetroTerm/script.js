@@ -1055,23 +1055,27 @@ function displayBroadcastMessage(data) {
         case 'MAIL':
             const mailSender = parts[1];
             const mailRecipient = parts[2];
-            const flag = parts[parts.length - 1];
-            let mailContent = parts.slice(3, -1).join('|');
 
-            if (mailRecipient.toLowerCase() === state.userName.toLowerCase()) {
-                // If the flag corresponds to a decryption method, decrypt the content
-                if (decryption[flag]) {
-                    mailContent = decryption[flag](mailContent);
-                }
-
-                html = `
-                    <span class="timestamp">[${date}]</span>
-                    <span style="color: var(--accent-color);">[Mail from ${escapeHtml(mailSender)}]:</span>
-                    <span class="message-content">${parseMarkdown(mailContent)}</span>
-                    <span class="timestamp">[${time}]</span>
-                `;
-                addMessageToChat(html, 'private-message', true);
+            if (mailRecipient.toLowerCase() !== state.userName.toLowerCase()) {
+                return; // Not for us
             }
+
+            // Format is MAIL|SENDER|RECIPIENT|CONTENT|ENC_FLAG|READ_STATUS
+            // So content is parts[3] and enc_flag is parts[4]
+            let mailContent = parts[3];
+            const encryptionFlag = parts[4];
+
+            if (decryption[encryptionFlag]) {
+                mailContent = decryption[encryptionFlag](mailContent);
+            }
+
+            html = `
+                <span class="timestamp">[${date}]</span>
+                <span style="color: var(--accent-color);">[Mail from ${escapeHtml(mailSender)}]:</span>
+                <span class="message-content">${parseMarkdown(mailContent)}</span>
+                <span class="timestamp">[${time}]</span>
+            `;
+            addMessageToChat(html, 'private-message', true);
             return;
         case 'MSG':
             const parsedMessage = parseMarkdown(content);
