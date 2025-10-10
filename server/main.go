@@ -284,7 +284,7 @@ func (c *Client) readPump() {
 			}
 		case "MAIL":
 			// Mail is stored but NOT broadcast
-			if err := storeMessage(c.sessionID, msgString, c.IPAddress, "L|~|B"); err != nil {
+			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID,
 					Message:   "STORE_FAILED|" + err.Error(),
@@ -298,7 +298,7 @@ func (c *Client) readPump() {
 			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
 			// For all other message types, store and broadcast.
-			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress, "L|~|B"); err != nil {
+			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID,
 					Message:   "STORE_FAILED|" + err.Error(),
@@ -808,14 +808,14 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-func storeMessage(sessionID, message, ipAddress, channel string) error {
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at, channel) VALUES(?, ?, ?, ?, ?)")
+func storeMessage(sessionID, message, ipAddress string) error {
+	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
 	if err != nil {
 		log.Printf("Database error on storeMessage prep: %v", err)
 		return err
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now(), channel)
+	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
 		return err
@@ -876,7 +876,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 
 		// 1. Broadcast "Session canceled" as an anonymous ECHO message.
 		cancelMsg := "ECHO||***Session Canceled***"
-		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast", "L|~|B")
+		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast")
 
 		time.Sleep(1 * time.Second)
 
@@ -884,7 +884,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		tx, err := db.Begin()
 		if err != nil {
 			log.Printf("CRITICAL: Failed to begin transaction for session deletion %s: %v", sessionID, err)
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "L|~|B")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 
@@ -893,7 +893,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to archive messages for session %s: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "L|~|B")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 
@@ -902,7 +902,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to delete messages for session %s: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "L|~|B")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 
@@ -911,13 +911,13 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to execute delete for session %s in transaction: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "L|~|B")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 
 		if err := tx.Commit(); err != nil {
 			log.Printf("CRITICAL: Failed to commit transaction for session deletion %s: %v", sessionID, err)
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "L|~|B")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
 			return
 		}
 
@@ -930,7 +930,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 
 		// 3. Broadcast final messages as anonymous ECHO messages.
 		deletedMsg := "ECHO||***SESSION DELETED*** :: Resetting clients."
-		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast", "L|~|B")
+		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast")
 
 		// 4. Broadcast the special non-visible message to trigger the client-side redirect.
 		redirectMsg := "KILL9_INITIATE_REDIRECT||"
