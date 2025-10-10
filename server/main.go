@@ -420,8 +420,8 @@ func initDB() {
 	}
 
 	// Configure the connection pool
-	db.SetConnMaxLifetime(time.Minute * 3) // Keep this to recycle connections periodically
-	db.SetConnMaxIdleTime(time.Minute * 1) // Close connections that are idle for a minute
+	db.SetConnMaxLifetime(time.Minute * 1) // Force connections to be recycled every minute
+	db.SetConnMaxIdleTime(time.Second * 30) // Close connections that are idle for 30 seconds
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(10)
 
@@ -831,23 +831,22 @@ func storeMessage(sessionID, message, ipAddress string) error {
 }
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
-	// Store the message in the database
-	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
-	if err != nil {
+	// Store the message in the database first.
+	if err := storeMessage(sessionID, message, ipAddress); err != nil {
 		log.Printf("Failed to save broadcast message: %v", err)
 		return err
 	}
 
-	// Broadcast the message via WebSocket
+	// Then, broadcast the message via the central hub channel.
 	jsonMsg, err := json.Marshal(ChatMessage{
 		SessionID: sessionID,
 		Message:   message,
 		Timestamp: time.Now(),
 	})
 	if err == nil {
-		hub.broadcastToSession(sessionID, jsonMsg)
+		hub.broadcast <- BroadcastMessage{SessionID: sessionID, Message: jsonMsg}
 	} else {
-		log.Printf("Failed to marshal broadcast message: %v", err)
+		log.Printf("Failed to marshal broadcast message for hub: %v", err)
 	}
 	return nil
 }
