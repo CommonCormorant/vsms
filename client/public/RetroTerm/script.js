@@ -442,7 +442,7 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
+    const imMessage = `IM|${recipient}|${message}`;
     serverApi.sendWsMessage(imMessage);
     const sentImHtml = `> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`;
     addMessageToChat(sentImHtml, 'private-message', true); // Add to history
@@ -1046,7 +1046,7 @@ function displayBroadcastMessage(data) {
         const recipient = escapeHtml(parts[1]);
         const originalMessage = escapeHtml(parts.slice(2).join('|'));
         const failHtml = `> [IM to ${recipient}]: ${originalMessage} <span style="color: var(--system-color-dark-gray);">[Fail: ${recipient} isn't here]</span>`;
-        addMessageToChat(failHtml, 'private-message-fail');
+        addMessageToChat(failHtml, 'private-message-fail', true);
         return;
     }
 

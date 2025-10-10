@@ -246,12 +246,11 @@ func (c *Client) readPump() {
 		// Route message based on type
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 4 { // IM|recipient|sender|message
+			if len(msgParts) < 3 { // IM|recipient|message
 				continue
 			}
 			recipientNick := msgParts[1]
-			senderNick := msgParts[2]
-			messageContent := strings.Join(msgParts[3:], "|")
+			messageContent := strings.Join(msgParts[2:], "|")
 
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
@@ -266,8 +265,8 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				// Reconstruct the message to be IM|SENDER|MESSAGE for the recipient client
-				imMsgString := fmt.Sprintf("IM|%s|%s", senderNick, messageContent)
+				// Reconstruct the message with the SENDER's nickname for security and correctness
+				imMsgString := fmt.Sprintf("IM|%s|%s", c.Nickname, messageContent)
 				imMsgJson, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: imMsgString, Timestamp: time.Now(),
 				})
