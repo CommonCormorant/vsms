@@ -675,39 +675,14 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var newFlag string
-		var oldContentAndFlag string
-
-		// Correctly handle both encrypted (6+ parts) and normal (5+ parts) mail
-		// Format: MAIL|SENDER|RECIPIENT|...CONTENT...|FLAG|U
-		// or MAIL|SENDER|RECIPIENT|...CONTENT...|U
-		if len(parts) >= 6 && parts[len(parts)-1] == "U" {
-			encryptionFlag := parts[len(parts)-2]
-			switch encryptionFlag {
-			case "x":
-				newFlag = "r_x"
-			case "rx":
-				newFlag = "r_rx"
-			case "xx":
-				newFlag = "r_xx"
-			case "xr":
-				newFlag = "r_xr"
-			default:
-				// This means it's a normal message with a pipe in it
-				newFlag = "R"
-			}
-		} else if len(parts) >= 5 && parts[len(parts)-1] == "U" {
-			newFlag = "R"
-		} else {
-			continue // Malformed or already read
+		// Simply replace the final "|U" with "|R" to mark as read, preserving all other parts.
+		if !strings.HasSuffix(msg.Message, "|U") {
+			continue // Already read or malformed
 		}
-
-		// Reconstruct the message without the |U suffix, then add the new read flag
-		oldContentAndFlag = strings.TrimSuffix(msg.Message, "|U")
-		newMessage := oldContentAndFlag + "|" + newFlag
+		newMessage := strings.TrimSuffix(msg.Message, "|U") + "|R"
 
 		messagesToUpdate = append(messagesToUpdate, struct {
-			ID      int
+			ID         int
 			NewMessage string
 		}{id, newMessage})
 
@@ -822,6 +797,16 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func storeMessage(sessionID, message, ipAddress string) error {
+	// Ping the database to ensure the connection is alive before executing the query.
+	if err := db.Ping(); err != nil {
+		log.Printf("Database ping failed: %v", err)
+		// Try to re-establish the connection.
+		initDB()
+		if err := db.Ping(); err != nil {
+			log.Printf("Database reconnect failed: %v", err)
+			return err // Return error if reconnect fails
+		}
+	}
 	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
@@ -839,16 +824,16 @@ func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
 		// but we will return the database error to the originating client.
 	}
 
-	// Broadcast the message to all clients in the session.
+	// Broadcast the message to all clients in the session via the hub.
 	jsonMsg, err := json.Marshal(ChatMessage{
 		SessionID: sessionID,
 		Message:   message,
 		Timestamp: time.Now(),
 	})
 	if err == nil {
-		hub.broadcastToSession(sessionID, jsonMsg)
+		hub.broadcast <- BroadcastMessage{SessionID: sessionID, Message: jsonMsg}
 	} else {
-		log.Printf("Failed to marshal broadcast message for session: %v", err)
+		log.Printf("Failed to marshal broadcast message for hub: %v", err)
 	}
 
 	// Return the original database error, if there was one.
