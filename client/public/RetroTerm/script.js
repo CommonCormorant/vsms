@@ -486,12 +486,49 @@ async function handleMailOutCommand() {
     }
 }
 
+function handleEncryptedMessageCommand(type, recipient, message) {
+    const flags = {
+        enc: 'x',
+        encr: 'rx',
+        enc2: 'xx',
+        encr2: 'xr'
+    };
+
+    const flag = flags[type];
+    if (!flag) {
+        addMessageToChat(`Unknown encryption type: ${type}`, 'error-message');
+        return;
+    }
+
+    const encryptedMessage = encryption[type](message);
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}`;
+    serverApi.sendWsMessage(mailMessage);
+    addMessageToChat(`Your encrypted message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
+}
+
 function handleMessageCommand(recipient, message) {
     // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE|U
     const mailMessage = `MAIL|${state.userName}|${recipient}|${message}|U`;
     serverApi.sendWsMessage(mailMessage);
     addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
 }
+
+function convertToHex(text) {
+    if (!text) return '';
+    let hexChunks = [];
+    for (let i = 0; i < text.length; i++) {
+        const hex = text.charCodeAt(i).toString(16).padStart(2, '0');
+        hexChunks.push(hex);
+    }
+    return hexChunks.join('');
+}
+
+const encryption = {
+    enc: (text) => convertToHex(text),
+    encr: (text) => convertToHex(text.split('').reverse().join('')),
+    enc2: (text) => convertToHex(convertToHex(text)),
+    encr2: (text) => convertToHex(text).split('').reverse().join('')
+};
 
 function showHelp() {
     addMessageToChat(`Available commands:
@@ -778,6 +815,16 @@ chatForm.addEventListener('submit', async (e) => {
                 } else {
                     addMessageToChat('Usage: /mail [?|out|recipient, message]', 'system-message');
                 }
+            }
+        } else if (['enc', 'encrypt', 'encr', 'encryptr', 'enc2', 'encrypt2', 'encr2', 'encryptr2'].includes(command)) {
+            const match = args.match(/^(.+?),(.+)$/s);
+            if (match) {
+                const recipient = match[1].trim();
+                const message = match[2].trim();
+                let type = command.replace('encrypt', 'enc');
+                handleEncryptedMessageCommand(type, recipient, message);
+            } else {
+                addMessageToChat(`Usage: /${command} recipient, message`, 'system-message');
             }
         } else if (['roll', 'flip'].includes(command)) {
             handleBroadcastCommand(command, args);
