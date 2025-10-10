@@ -57,6 +57,13 @@ type WhoisResponse struct {
 	Profile      string `json:"profile"`
 }
 
+type GeoInfo struct {
+    Status  string `json:"status"`
+    Country string `json:"country"`
+    Region  string `json:"regionName"`
+    City    string `json:"city"`
+}
+
 type ChatMessage struct {
 	SessionID string    `json:"session_id"`
 	Message   string    `json:"message"`
@@ -841,6 +848,87 @@ func mailOutHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Row iteration error in mailOutHandler: %v", err)
 		http.Error(w, "Row iteration error", http.StatusInternalServerError)
 		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func getGeoFromIP(ip string) (string, error) {
+    client := http.Client{Timeout: 5 * time.Second}
+    url := fmt.Sprintf("https://ip-api.com/json/%s", ip)
+    resp, err := client.Get(url)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+
+    var geo GeoInfo
+    if err := json.NewDecoder(resp.Body).Decode(&geo); err != nil {
+        return "", err
+    }
+
+    if geo.Status != "success" {
+        return "Unknown", fmt.Errorf("geo lookup failed for IP %s", ip)
+    }
+
+    return fmt.Sprintf("The %s area", geo.City), nil
+}
+
+func whoisHandler(w http.ResponseWriter, r *http.Request) {
+	nick := r.URL.Query().Get("nick")
+	if nick == "" {
+		http.Error(w, "Nickname is required", http.StatusBadRequest)
+		return
+	}
+
+	var response WhoisResponse
+	var firstArrived time.Time
+	var ipAddress string
+
+	// Get first message timestamp and last known IP address
+	likePattern := fmt.Sprintf("%%|%s|%%", nick)
+	err := db.QueryRow("SELECT created_at, ip_address FROM chat_messages WHERE message LIKE ? ORDER BY created_at ASC LIMIT 1", likePattern).Scan(&firstArrived, &ipAddress)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "No activity found for this user.", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+	response.FirstArrived = firstArrived.Format("Jan 2, 2006")
+
+	// Get message count
+	msgLike := fmt.Sprintf("MSG|%s|%%", nick)
+	artLike := fmt.Sprintf("ART|%s|%%", nick)
+	partLike := fmt.Sprintf("PART|%s|%%", nick)
+	err = db.QueryRow("SELECT COUNT(*) FROM chat_messages WHERE message LIKE ? OR message LIKE ? OR message LIKE ?", msgLike, artLike, partLike).Scan(&response.MessageCount)
+	if err != nil {
+		http.Error(w, "Database error counting messages", http.StatusInternalServerError)
+		return
+	}
+
+	// Get profile
+	profileLike := fmt.Sprintf("PROFILE|%s|%%", nick)
+	var profileMessage string
+	err = db.QueryRow("SELECT message FROM chat_messages WHERE message LIKE ? ORDER BY created_at DESC LIMIT 1", profileLike).Scan(&profileMessage)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error getting profile", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
+		parts := strings.SplitN(profileMessage, "|", 3)
+		if len(parts) >= 3 {
+			response.Profile = parts[2]
+		}
+	}
+
+	// Get location from IP
+	response.Location, err = getGeoFromIP(ipAddress)
+	if err != nil {
+		log.Printf("Geolocation lookup failed for IP %s: %v", ipAddress, err)
+		response.Location = "an undisclosed location" // Graceful fallback
 	}
 
 	w.Header().Set("Content-Type", "application/json")

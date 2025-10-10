@@ -347,7 +347,7 @@ function handleLocalCommand(input) {
                         whoisMessage += `From ${escapeHtml(data.location)}<br>`;
                         whoisMessage += `${escapeHtml(targetName)} has sent ${data.message_count} messages<br>`;
                         if (data.profile) {
-                            whoisMessage += `Says ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
+                            whoisMessage += `Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
                         }
                         addMessageToChat(whoisMessage, 'system-message');
                     })
