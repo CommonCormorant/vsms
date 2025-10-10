@@ -831,24 +831,28 @@ func storeMessage(sessionID, message, ipAddress string) error {
 }
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
-	// Store the message in the database first.
-	if err := storeMessage(sessionID, message, ipAddress); err != nil {
-		log.Printf("Failed to save broadcast message: %v", err)
-		return err
+	// Store the message in the database and capture any error.
+	dbErr := storeMessage(sessionID, message, ipAddress)
+	if dbErr != nil {
+		log.Printf("Failed to save broadcast message: %v", dbErr)
+		// We'll still attempt to broadcast the message to the session,
+		// but we will return the database error to the originating client.
 	}
 
-	// Then, broadcast the message via the central hub channel.
+	// Broadcast the message to all clients in the session.
 	jsonMsg, err := json.Marshal(ChatMessage{
 		SessionID: sessionID,
 		Message:   message,
 		Timestamp: time.Now(),
 	})
 	if err == nil {
-		hub.broadcast <- BroadcastMessage{SessionID: sessionID, Message: jsonMsg}
+		hub.broadcastToSession(sessionID, jsonMsg)
 	} else {
-		log.Printf("Failed to marshal broadcast message for hub: %v", err)
+		log.Printf("Failed to marshal broadcast message for session: %v", err)
 	}
-	return nil
+
+	// Return the original database error, if there was one.
+	return dbErr
 }
 
 func handleKill9Request(hub *Hub, sessionID string, userName string) {
