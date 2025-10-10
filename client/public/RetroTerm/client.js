@@ -168,7 +168,7 @@ function getSessionId() {
     return session.id;
 }
 
-function connectWebSocket(userName, onMessageCallback, onOpenCallback) {
+function connectWebSocket(getUsername, onMessageCallback, onOpenCallback) {
     const sessionId = getSessionId();
     if (!sessionId || preventReconnect) {
         return;
@@ -184,7 +184,7 @@ function connectWebSocket(userName, onMessageCallback, onOpenCallback) {
         console.log('WebSocket connected.');
         addMessageToChat('Real-time connection established.', 'system-message');
         reconnectAttempts = 0; // Reset counter on successful connection
-        wsConnection.send(`NICK|${userName}`);
+        wsConnection.send(`NICK|${getUsername()}`);
         if (onOpenCallback) {
             onOpenCallback();
         }
@@ -215,7 +215,7 @@ function connectWebSocket(userName, onMessageCallback, onOpenCallback) {
             const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts) + (Math.random() * 1000);
             reconnectAttempts++;
             addMessageToChat(`Connection lost. Attempting to reconnect in ${Math.round(delay / 1000)}s... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'error-message');
-            setTimeout(() => connectWebSocket(userName, onMessageCallback, onOpenCallback), delay);
+            setTimeout(() => connectWebSocket(getUsername, onMessageCallback, onOpenCallback), delay);
         } else {
             addMessageToChat('Could not reconnect to the server. Please refresh the page.', 'error-message');
         }

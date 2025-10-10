@@ -295,6 +295,18 @@ func (c *Client) readPump() {
 				default:
 					log.Printf("Failed to send STORE_FAILED to %s, channel is full or closed.", c.Nickname)
 				}
+			} else {
+				recipientNick := msgParts[2]
+				successMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID,
+					Message:   "STORE_SUCCESS|" + recipientNick,
+					Timestamp: time.Now(),
+				})
+				select {
+				case c.send <- successMsg:
+				default:
+					log.Printf("Failed to send STORE_SUCCESS to %s, channel is full or closed.", c.Nickname)
+				}
 			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
 			// For all other message types, store and broadcast.
@@ -810,13 +822,7 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func storeMessage(sessionID, message, ipAddress string) error {
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
-	if err != nil {
-		log.Printf("Database error on storeMessage prep: %v", err)
-		return err
-	}
-	defer stmt.Close()
-	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
 		return err
@@ -826,13 +832,7 @@ func storeMessage(sessionID, message, ipAddress string) error {
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
 	// Store the message in the database
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
-	if err != nil {
-		log.Printf("Database error on broadcastAndStore prep: %v", err)
-		return err
-	}
-	defer stmt.Close()
-	_, err = stmt.Exec(sessionID, message, ipAddress, time.Now())
+	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save broadcast message: %v", err)
 		return err

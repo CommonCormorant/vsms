@@ -503,14 +503,14 @@ function handleEncryptedMessageCommand(type, recipient, message) {
     const encryptedMessage = encryption[type](message);
     const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
     serverApi.sendWsMessage(mailMessage);
-    addMessageToChat(`Your encrypted message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
+    // The confirmation message is now handled by STORE_SUCCESS
 }
 
 function handleMessageCommand(recipient, message) {
     // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE||U
     const mailMessage = `MAIL|${state.userName}|${recipient}|${message}||U`;
     serverApi.sendWsMessage(mailMessage);
-    addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
+    // The confirmation message is now handled by STORE_SUCCESS
 }
 
 function convertToHex(text) {
@@ -997,6 +997,18 @@ function displayBroadcastMessage(data) {
     const parts = message.split('|');
     const type = parts[0];
 
+    if (type === 'STORE_SUCCESS') {
+        const recipient = escapeHtml(parts[1]);
+        addMessageToChat(`Your message to ${recipient} has been sent.`, 'system-message');
+        return;
+    }
+
+    if (type === 'STORE_FAILED') {
+        const errorMessage = parts.slice(1).join('|');
+        addMessageToChat(`! Server Error: Could not save message. Reason: ${escapeHtml(errorMessage)}`, 'error-message');
+        return;
+    }
+
     if (type === 'KILL9_DB_ERROR') {
         addMessageToChat('***CRITICAL SERVER ERROR: Failed to delete session.***', 'error-message');
         return;
@@ -1166,10 +1178,10 @@ async function initializeApp() {
 
         const onOpenCallback = isNewJoiner ? async () => {
             await handleHistoryCommand();
-            await handleEmote("has joined.");
+            handleEmote("has joined.");
         } : null;
 
-        connectWebSocket(state.userName, displayBroadcastMessage, onOpenCallback);
+        connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback);
 
         // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');
