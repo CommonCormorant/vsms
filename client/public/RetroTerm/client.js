@@ -34,18 +34,6 @@ const serverApi = {
         return response.json();
     },
 
-    async sendMessage(session_id, message) {
-        const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id, message }),
-        });
-        if (!response.ok) {
-            throw new Error(`Send message failed: ${response.statusText}`);
-        }
-        return response.json();
-    },
-
     async getHistory(session_id, minutes = 15) {
         const response = await fetch(`/api/history?sID=${session_id}&minutes=${minutes}`, {
             method: 'GET',
@@ -84,18 +72,18 @@ const serverApi = {
         return response.json();
     },
 
-    async getOnlineUsers(session_id) {
-        const response = await fetch(`/api/online?sID=${session_id}`);
-        if (!response.ok) {
-            throw new Error(`Online users request failed: ${response.statusText}`);
-        }
-        return response.json();
-    },
-
     async checkMail(session_id, nick) {
         const response = await fetch(`/api/mail/check?sID=${session_id}&nick=${encodeURIComponent(nick)}`);
         if (!response.ok) {
             throw new Error(`Mail check failed: ${response.statusText}`);
+        }
+        return response.json();
+    },
+
+    async checkMailOut(session_id, nick) {
+        const response = await fetch(`/api/mail/out?sID=${session_id}&nick=${encodeURIComponent(nick)}`);
+        if (!response.ok) {
+            throw new Error(`Mail out check failed: ${response.statusText}`);
         }
         return response.json();
     }

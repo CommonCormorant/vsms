@@ -44,6 +44,12 @@ type VerifyResponse struct {
 	Message   string `json:"message"`
 }
 
+type MailOutResponse struct {
+	Total  int `json:"total"`
+	Read   int `json:"read"`
+	Unread int `json:"unread"`
+}
+
 type ChatMessage struct {
 	SessionID string    `json:"session_id"`
 	Message   string    `json:"message"`
@@ -193,6 +199,7 @@ type Client struct {
 	send      chan []byte
 	sessionID string
 	Nickname  string
+	IPAddress string
 }
 
 func (c *Client) readPump() {
@@ -200,6 +207,7 @@ func (c *Client) readPump() {
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
+
 	// The first message from the client must be the nickname announcement.
 	_, message, err := c.conn.ReadMessage()
 	if err != nil {
@@ -212,7 +220,13 @@ func (c *Client) readPump() {
 		log.Printf("First message was not a valid NICK announcement: %s", message)
 		return
 	}
-	c.Nickname = parts[1]
+
+	nickname := parts[1]
+	if strings.Contains(nickname, ",") || strings.Contains(nickname, "!") {
+		log.Printf("Connection rejected for invalid nickname: %s", nickname)
+		return // This closes the connection via the defer statement.
+	}
+	c.Nickname = nickname
 	c.hub.register <- c // Now register the client with the hub, so it can be announced
 
 	// After registration, loop to read subsequent messages.
@@ -227,10 +241,15 @@ func (c *Client) readPump() {
 
 		msgString := string(msgBytes)
 		msgParts := strings.Split(msgString, "|")
+		msgType := msgParts[0]
 
-		if len(msgParts) >= 4 && msgParts[0] == "IM" {
+		// Route message based on type
+		switch msgType {
+		case "IM":
+			if len(msgParts) < 4 {
+				continue
+			}
 			recipientNick := msgParts[1]
-
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
 			if session, ok := c.hub.sessions[c.sessionID]; ok {
@@ -244,11 +263,8 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				// Forward the message to the recipient
 				imMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID,
-					Message:   msgString,
-					Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: msgString, Timestamp: time.Now(),
 				})
 				select {
 				case recipientClient.send <- imMsg:
@@ -256,16 +272,22 @@ func (c *Client) readPump() {
 					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
 				}
 			} else {
-				// Send delivery failed message back to sender
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID,
-					Message:   "DELIVERY_FAILED|" + recipientNick,
-					Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
+		case "KILL9":
+			if len(msgParts) > 1 {
+				userName := msgParts[1]
+				go handleKill9Request(c.hub, c.sessionID, userName)
+			}
+		case "MSG", "EMOTE", "ART", "PART", "MAIL", "ROLL", "FLIP", "ECHO":
+			// For all other message types, store and broadcast.
+			broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress)
+		default:
+			log.Printf("Unknown message type received: %s", msgType)
 		}
-		// Other message types received over WebSocket are ignored.
 	}
 }
 
@@ -331,14 +353,12 @@ for from, to := range redirects {
 	api := r.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/auth/request", requestTokenHandler).Methods("POST")
 	api.HandleFunc("/auth/verify", verifyTokenHandler).Methods("POST")
-	api.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
-		chatMessageHandler(hub, w, r)
-	}).Methods("POST")
 	api.HandleFunc("/history", historyHandler).Methods("GET")
 	api.HandleFunc("/archive", archiveHandler).Methods("GET")
 	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
 	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
 	api.HandleFunc("/mail/check", mailCheckHandler).Methods("GET")
+	api.HandleFunc("/mail/out", mailOutHandler).Methods("GET")
 	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
@@ -567,60 +587,6 @@ func archiveHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-func chatMessageHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	var msg ChatMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if msg.SessionID == "" || msg.Message == "" {
-		http.Error(w, "SessionID and message are required", http.StatusBadRequest)
-		return
-	}
-
-	// Handle KILL9 command
-	parts := strings.Split(msg.Message, "|")
-	if len(parts) > 1 && parts[0] == "KILL9" {
-		userName := parts[1]
-		go handleKill9Request(hub, msg.SessionID, userName)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "kill request received"})
-		return
-	}
-
-	ipAddress := r.Header.Get("X-Real-IP")
-	if ipAddress == "" {
-		ipAddress = r.Header.Get("X-Forwarded-For")
-	}
-	if ipAddress == "" {
-		ipAddress = r.RemoteAddr
-	}
-	msg.IPAddress = ipAddress
-	msg.Timestamp = time.Now()
-
-	stmt, err := db.Prepare("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)")
-	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
-	defer stmt.Close()
-	_, err = stmt.Exec(msg.SessionID, msg.Message, msg.IPAddress, msg.Timestamp)
-	if err != nil {
-		http.Error(w, "Failed to save message", http.StatusInternalServerError)
-		return
-	}
-
-	jsonMsg, err := json.Marshal(msg)
-	if err != nil {
-		http.Error(w, "Failed to marshal message", http.StatusInternalServerError)
-		return
-	}
-	hub.broadcast <- BroadcastMessage{SessionID: msg.SessionID, Message: jsonMsg}
-
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "message sent"})
-}
-
 func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sID")
 	recipientNick := r.URL.Query().Get("nick")
@@ -696,6 +662,47 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
+func mailOutHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	senderNick := r.URL.Query().Get("nick")
+	if sessionID == "" || senderNick == "" {
+		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+		return
+	}
+
+	likePattern := fmt.Sprintf("MAIL|%s|%%", senderNick)
+	rows, err := db.Query("SELECT message FROM chat_messages WHERE session_id = ? AND message LIKE ?", sessionID, likePattern)
+	if err != nil {
+		log.Printf("Database query error in mailOutHandler: %v", err)
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var response MailOutResponse
+	for rows.Next() {
+		var message string
+		if err := rows.Scan(&message); err != nil {
+			log.Printf("Failed to scan message row in mailOutHandler: %v", err)
+			continue
+		}
+		response.Total++
+		if strings.HasSuffix(message, "|U") {
+			response.Unread++
+		} else if strings.HasSuffix(message, "|R") {
+			response.Read++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error in mailOutHandler: %v", err)
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sID")
 	if !isSessionValid(sessionID) {
@@ -703,12 +710,26 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ipAddress := r.Header.Get("X-Real-IP")
+	if ipAddress == "" {
+		ipAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if ipAddress == "" {
+		ipAddress = r.RemoteAddr
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256), sessionID: sessionID}
+	client := &Client{
+		hub:       hub,
+		conn:      conn,
+		send:      make(chan []byte, 256),
+		sessionID: sessionID,
+		IPAddress: ipAddress,
+	}
 	// The client is now registered in the readPump after the nickname is received.
 
 	go client.writePump()

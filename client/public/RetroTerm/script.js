@@ -238,10 +238,14 @@ function handleLocalCommand(input) {
         case 'name':
         case 'nick':
             if (args) {
-                state.userName = args;
-                saveSettings();
-                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-                checkForMail();
+                if (args.includes(',') || args.includes('!')) {
+                    addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
+                } else {
+                    state.userName = args;
+                    saveSettings();
+                    addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+                    checkForMail();
+                }
             } else {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
                 const nameIndex = Math.floor(Math.random() * 10);
@@ -459,15 +463,34 @@ async function checkForMail() {
     }
 }
 
-async function handleMessageCommand(recipient, message) {
+async function handleMailOutCommand() {
+    addMessageToChat('Checking your sent mail...', 'system-message');
+    try {
+        const stats = await serverApi.checkMailOut(getSessionId(), state.userName);
+        if (stats.total === 0) {
+            addMessageToChat("You've sent no messages.", 'system-message');
+        } else {
+            const plural = stats.total > 1 ? 's' : '';
+            let status_string;
+            if (stats.unread === 0) {
+                status_string = 'all have been read.';
+            } else if (stats.read === 0) {
+                status_string = 'all are unread.';
+            } else {
+                status_string = `${stats.read} read and ${stats.unread} remain unread.`;
+            }
+            addMessageToChat(`You've sent ${stats.total} message${plural}, ${status_string}`, 'system-message');
+        }
+    } catch (error) {
+        addMessageToChat(`Error checking sent mail: ${error.message}`, 'error-message');
+    }
+}
+
+function handleMessageCommand(recipient, message) {
     // Corrected Format: MAIL|SENDER|RECIPIENT|MESSAGE|U
     const mailMessage = `MAIL|${state.userName}|${recipient}|${message}|U`;
-    try {
-        await serverApi.sendMessage(getSessionId(), mailMessage);
-        addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
-    } catch (error) {
-        addMessageToChat(`! Could not send mail to ${escapeHtml(recipient)}.`, 'error-message');
-    }
+    serverApi.sendWsMessage(mailMessage);
+    addMessageToChat(`Your message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
 }
 
 function showHelp() {
@@ -500,54 +523,39 @@ function showHelp() {
         <br>/help - Show this help message (? also works).`, 'system-message');
 }
 
-async function handleMessage(message) {
+function handleMessage(message) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
         return;
     }
     const prefixedMessage = `MSG|${state.userName}|${message}`;
-    try {
-        await serverApi.sendMessage(sessionId, prefixedMessage);
-    } catch (error) {
-        console.error('Failed to send message:', error);
-        addMessageToChat(`Error sending message: ${error.message}`, 'error-message');
-    }
+    serverApi.sendWsMessage(prefixedMessage);
 }
 
-async function handleEmote(action) {
+function handleEmote(action) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
         return;
     }
     const emoteMessage = `EMOTE|${state.userName}|${action}`;
-    try {
-        await serverApi.sendMessage(sessionId, emoteMessage);
-    } catch (error) {
-        console.error('Failed to send emote:', error);
-        addMessageToChat(`Error sending emote: ${error.message}`, 'error-message');
-    }
+    serverApi.sendWsMessage(emoteMessage);
 }
 
-async function handleArt(artContent) {
+function handleArt(artContent) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
         return;
     }
     const artMessage = `ART|${state.userName}|${artContent}`;
-    try {
-        await serverApi.sendMessage(sessionId, artMessage);
-        artWidget.classList.add('hidden');
-    } catch (error) {
-        console.error('Failed to send art:', error);
-        addMessageToChat(`Error sending art: ${error.message}`, 'error-message');
-    }
+    serverApi.sendWsMessage(artMessage);
+    artWidget.classList.add('hidden');
 }
 window.sendArt = handleArt;
 
-async function handleParagraphArt(content) {
+function handleParagraphArt(content) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
@@ -555,21 +563,16 @@ async function handleParagraphArt(content) {
     }
     const processedContent = content.replace(/\n/g, '¶');
     const partMessage = `PART|${state.userName}|${processedContent}`;
-    try {
-        await serverApi.sendMessage(sessionId, partMessage);
-        pArtWidget.classList.add('hidden');
-        pArtTextarea.value = '';
-    } catch (error) {
-        console.error('Failed to send paragraph art:', error);
-        addMessageToChat(`Error sending paragraph: ${error.message}`, 'error-message');
-    }
+    serverApi.sendWsMessage(partMessage);
+    pArtWidget.classList.add('hidden');
+    pArtTextarea.value = '';
 }
 
-async function handleBroadcastCommand(command, args) {
+function handleBroadcastCommand(command, args) {
     const sessionId = getSessionId();
     if (!sessionId) {
         addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
-        return false;
+        return;
     }
 
     let prefixedMessage = '';
@@ -577,7 +580,7 @@ async function handleBroadcastCommand(command, args) {
     switch (command) {
         case 'roll':
             const sides = args ? parseInt(args) : 6;
-            if (isNaN(sides) || sides < 2) return false;
+            if (isNaN(sides) || sides < 2) return;
             const result = Math.floor(Math.random() * sides) + 1;
             prefixedMessage = `ROLL|${state.userName}|d${sides} ${result}`;
             break;
@@ -586,17 +589,10 @@ async function handleBroadcastCommand(command, args) {
             prefixedMessage = `FLIP|${state.userName}|${coin}`;
             break;
         default:
-            return false;
+            return;
     }
 
-    try {
-        await serverApi.sendMessage(sessionId, prefixedMessage);
-        return true;
-    } catch (error) {
-        console.error(`Failed to send ${command}:`, error);
-        addMessageToChat(`Error sending command: ${error.message}`, 'error-message');
-        return false;
-    }
+    serverApi.sendWsMessage(prefixedMessage);
 }
 
 const LOCAL_COMMANDS = [
@@ -658,14 +654,14 @@ chatForm.addEventListener('submit', async (e) => {
     }
 
     if (input.startsWith(':') && input.length > 1) {
-        await handleEmote(input.slice(1).trim());
+        handleEmote(input.slice(1).trim());
         return;
     }
     if (input.startsWith('%')) {
         const echoText = input.slice(1).trim();
         if (echoText) {
             const prefixedMessage = `ECHO||${echoText}`;
-            await serverApi.sendMessage(getSessionId(), prefixedMessage);
+            serverApi.sendWsMessage(prefixedMessage);
         }
         return;
     }
@@ -677,10 +673,15 @@ chatForm.addEventListener('submit', async (e) => {
     if (input.startsWith('&') && input.length > 1) {
         const suffix = input.slice(1).trim();
         if (suffix) {
-            state.userName += suffix;
-            saveSettings();
-            addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-            checkForMail();
+            const newName = state.userName + suffix;
+            if (newName.includes(',') || newName.includes('!')) {
+                addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
+            } else {
+                state.userName = newName;
+                saveSettings();
+                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+                checkForMail();
+            }
         }
         return;
     }
@@ -701,16 +702,16 @@ chatForm.addEventListener('submit', async (e) => {
 
     if (input.startsWith('@')) {
         const content = input.slice(1).trim();
-        if (content === '?') {
+        if (content === '?' || content === '') {
             checkForMail();
         } else {
             const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
             if (match) {
                 const recipient = match[1].trim();
                 const message = match[2].trim();
-                await handleMessageCommand(recipient, message);
+                handleMessageCommand(recipient, message);
             } else {
-                addMessageToChat('Usage: @recipient, message  OR  @? to check mail', 'system-message');
+                addMessageToChat('Usage: @recipient, message  OR  @ or @? to check mail', 'system-message');
             }
         }
         return;
@@ -736,7 +737,7 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (command === 'history' || command === 'h') {
             await handleHistoryCommand(args);
         } else if (['me', 'em', 'emote'].includes(command)) {
-            await handleEmote(args);
+            handleEmote(args);
         } else if (command === 'im') {
             const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
             if (match) {
@@ -746,28 +747,43 @@ chatForm.addEventListener('submit', async (e) => {
             } else {
                 addMessageToChat('Usage: /im recipient, message', 'system-message');
             }
-        } else if (['message', 'msg', 'mail'].includes(command)) {
+        } else if (['message', 'msg'].includes(command)) {
             if (args.trim() === '?') {
-                if (command === 'mail') {
-                    checkForMail();
-                } else {
-                    addMessageToChat('Bad syntax. To check for mail, use /mail ? or @?', 'system-message');
-                }
+                addMessageToChat('Bad syntax. To check for mail, use /mail or @.', 'system-message');
             } else {
-                const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+                const match = args.match(/^(.+?),(.+)$/s);
                 if (match) {
                     const recipient = match[1].trim();
                     const message = match[2].trim();
-                    await handleMessageCommand(recipient, message);
+                    handleMessageCommand(recipient, message);
                 } else {
                     addMessageToChat(`Usage: /${command} recipient, message`, 'system-message');
                 }
             }
+        } else if (command === 'mail' || command === 'mail?') {
+            if (command === 'mail?') {
+                args = '?';
+            }
+            const a = args.trim();
+            if (a === '' || a === '?') {
+                checkForMail();
+            } else if (a === 'out') {
+                handleMailOutCommand();
+            } else {
+                const match = args.match(/^(.+?),(.+)$/s);
+                if (match) {
+                    const recipient = match[1].trim();
+                    const message = match[2].trim();
+                    handleMessageCommand(recipient, message);
+                } else {
+                    addMessageToChat('Usage: /mail [?|out|recipient, message]', 'system-message');
+                }
+            }
         } else if (['roll', 'flip'].includes(command)) {
-            await handleBroadcastCommand(command, args);
+            handleBroadcastCommand(command, args);
         } else if (command === 'echo') {
             const prefixedMessage = `ECHO||${args}`;
-            await serverApi.sendMessage(getSessionId(), prefixedMessage);
+            serverApi.sendWsMessage(prefixedMessage);
         } else if (command === 'kill') {
             if (args === '') {
                 addMessageToChat('Disconnecting...', 'system-message');
@@ -781,14 +797,14 @@ chatForm.addEventListener('submit', async (e) => {
                     addMessageToChat('Error: Not connected. Please refresh.', 'error-message');
                 } else {
                     const killMessage = `KILL9|${state.userName}|`;
-                    await serverApi.sendMessage(sessionId, killMessage);
+                    serverApi.sendWsMessage(killMessage);
                 }
             }
         } else {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
         }
     } else {
-        await handleMessage(commandInput);
+        handleMessage(commandInput);
     }
 });
 
@@ -919,6 +935,13 @@ function displayBroadcastMessage(data) {
     }
 
     // Handle user joining or leaving. A PART message with 2 parts is a leave event.
+    if (type === 'WELCOME') {
+        const userList = parts[1] ? parts[1].split(',') : [];
+        state.onlineUsers = userList.map(u => escapeHtml(u));
+        addMessageToChat(`Online: ${state.onlineUsers.length > 0 ? state.onlineUsers.join(', ') : 'Just you!'}`, 'system-message');
+        return;
+    }
+
     if (type === 'JOIN' || (type === 'PART' && parts.length === 2)) {
         const user = escapeHtml(parts[1]);
         if (type === 'JOIN') {
@@ -1064,14 +1087,7 @@ async function initializeApp() {
             await handleEmote("has joined.");
         }
 
-        // Get initial list of online users and announce
-        try {
-            state.onlineUsers = await serverApi.getOnlineUsers(getSessionId());
-            handleAloneCommand();
-        } catch (error) {
-            addMessageToChat(`Could not get online users: ${error.message}`, 'error-message');
-        }
-
+        // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');
     } catch (error) {
         addMessageToChat(`Connection failed: ${error.message}`, 'error-message');
