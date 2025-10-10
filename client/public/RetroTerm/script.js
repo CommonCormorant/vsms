@@ -1160,12 +1160,13 @@ async function initializeApp() {
     try {
         const isNewJoiner = await initializeSession(state.userName);
         addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
-        connectWebSocket(state.userName, displayBroadcastMessage);
 
-        if (isNewJoiner) {
+        const onOpenCallback = isNewJoiner ? async () => {
             await handleHistoryCommand();
             await handleEmote("has joined.");
-        }
+        } : null;
+
+        connectWebSocket(state.userName, displayBroadcastMessage, onOpenCallback);
 
         // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');
