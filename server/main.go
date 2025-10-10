@@ -876,7 +876,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 
 		// 1. Broadcast "Session canceled" as an anonymous ECHO message.
 		cancelMsg := "ECHO||***Session Canceled***"
-		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast")
+		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast", "LOBBY")
 
 		time.Sleep(1 * time.Second)
 
@@ -884,7 +884,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		tx, err := db.Begin()
 		if err != nil {
 			log.Printf("CRITICAL: Failed to begin transaction for session deletion %s: %v", sessionID, err)
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "LOBBY")
 			return
 		}
 
@@ -893,7 +893,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to archive messages for session %s: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "LOBBY")
 			return
 		}
 
@@ -902,7 +902,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to delete messages for session %s: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "LOBBY")
 			return
 		}
 
@@ -911,13 +911,13 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 		if err != nil {
 			log.Printf("CRITICAL: Failed to execute delete for session %s in transaction: %v", sessionID, err)
 			tx.Rollback()
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "LOBBY")
 			return
 		}
 
 		if err := tx.Commit(); err != nil {
 			log.Printf("CRITICAL: Failed to commit transaction for session deletion %s: %v", sessionID, err)
-			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error", "LOBBY")
 			return
 		}
 
@@ -930,7 +930,7 @@ func handleKill9Request(hub *Hub, sessionID string, userName string) {
 
 		// 3. Broadcast final messages as anonymous ECHO messages.
 		deletedMsg := "ECHO||***SESSION DELETED*** :: Resetting clients."
-		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast")
+		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast", "LOBBY")
 
 		// 4. Broadcast the special non-visible message to trigger the client-side redirect.
 		redirectMsg := "KILL9_INITIATE_REDIRECT||"
