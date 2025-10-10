@@ -208,28 +208,8 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
-	// The first message from the client must be the nickname announcement.
-	_, message, err := c.conn.ReadMessage()
-	if err != nil {
-		log.Printf("Error reading nickname message: %v", err)
-		return
-	}
+	isRegistered := false // New state flag
 
-	parts := strings.Split(string(message), "|")
-	if len(parts) != 2 || parts[0] != "NICK" {
-		log.Printf("First message was not a valid NICK announcement: %s", message)
-		return
-	}
-
-	nickname := parts[1]
-	if strings.Contains(nickname, ",") || strings.Contains(nickname, "!") {
-		log.Printf("Connection rejected for invalid nickname: %s", nickname)
-		return // This closes the connection via the defer statement.
-	}
-	c.Nickname = nickname
-	c.hub.register <- c // Now register the client with the hub, so it can be announced
-
-	// After registration, loop to read subsequent messages.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -243,8 +223,39 @@ func (c *Client) readPump() {
 		msgParts := strings.Split(msgString, "|")
 		msgType := msgParts[0]
 
-		// Route message based on type
+		if !isRegistered {
+			if msgType == "NICK" && len(msgParts) == 2 {
+				nickname := msgParts[1]
+				if !strings.Contains(nickname, ",") && !strings.Contains(nickname, "!") {
+					c.Nickname = nickname
+					c.hub.register <- c
+					isRegistered = true
+					log.Printf("Client registered with Nick: %s", nickname)
+					continue
+				}
+				log.Printf("Connection rejected for invalid nickname: %s", nickname)
+			} else {
+				log.Printf("Connection rejected. First message was not a valid NICK announcement: %s", msgString)
+			}
+			break
+		}
+
 		switch msgType {
+		case "NICK":
+			if len(msgParts) == 2 {
+				newName := msgParts[1]
+				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
+					oldName := c.Nickname
+					c.Nickname = newName
+					updateMsg := fmt.Sprintf("NICK_UPDATE|%s|%s", oldName, newName)
+					jsonMsg, _ := json.Marshal(ChatMessage{
+						SessionID: c.sessionID,
+						Message:   updateMsg,
+						Timestamp: time.Now(),
+					})
+					c.hub.broadcast <- BroadcastMessage{SessionID: c.sessionID, Message: jsonMsg}
+				}
+			}
 		case "IM":
 			if len(msgParts) < 4 {
 				continue
@@ -272,8 +283,9 @@ func (c *Client) readPump() {
 					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
 				}
 			} else {
+				originalContent := strings.Join(msgParts[3:], "|")
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + originalContent, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
@@ -283,7 +295,6 @@ func (c *Client) readPump() {
 				go handleKill9Request(c.hub, c.sessionID, userName)
 			}
 		case "MAIL":
-			// Mail is stored but NOT broadcast
 			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID,
@@ -309,7 +320,6 @@ func (c *Client) readPump() {
 				}
 			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
-			// For all other message types, store and broadcast.
 			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID,

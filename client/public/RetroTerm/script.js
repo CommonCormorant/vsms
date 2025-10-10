@@ -237,22 +237,19 @@ function handleLocalCommand(input) {
     switch (command) {
         case 'name':
         case 'nick':
-            if (args) {
-                if (args.includes(',') || args.includes('!')) {
-                    addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
-                } else {
-                    state.userName = args;
-                    saveSettings();
-                    addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-                    checkForMail();
-                }
-            } else {
+            let newName = args;
+            if (!newName) {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
                 const nameIndex = Math.floor(Math.random() * 10);
-                state.userName = `${randomName}_${nameIndex}`;
-                saveSettings();
-                addMessageToChat(`You have been assigned a random name: ${escapeHtml(state.userName)}`, 'system-message');
-                checkForMail();
+                newName = `${randomName}_${nameIndex}`;
+            }
+
+            if (newName.includes(',') || newName.includes('!')) {
+                addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
+            } else {
+                // Send the request to the server. The server will broadcast the update.
+                const nickMessage = `NICK|${newName}`;
+                serverApi.sendWsMessage(nickMessage);
             }
             break;
         case 'nightmode':
@@ -445,7 +442,9 @@ function handleImCommand(recipient, message) {
     const imMessage = `IM|${recipient}|${state.userName}|${message}`;
     serverApi.sendWsMessage(imMessage);
 
-    const messageHtml = `<b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}`;
+    // Create a unique ID for this message to find it later if it fails
+    const messageId = `im-${Date.now()}-${Math.random()}`;
+    const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
     addMessageToChat(messageHtml, 'private-message', true);
 }
 
@@ -727,6 +726,28 @@ chatForm.addEventListener('submit', async (e) => {
         if (echoText) {
             const prefixedMessage = `ECHO||${echoText}`;
             serverApi.sendWsMessage(prefixedMessage);
+        }
+        return;
+    }
+
+    if (type === 'NICK_UPDATE') {
+        const oldNick = escapeHtml(parts[1]);
+        const newNick = escapeHtml(parts[2]);
+
+        // Update the current user's name if it matches the old nick
+        if (state.userName.toLowerCase() === oldNick.toLowerCase()) {
+            state.userName = newNick;
+            saveSettings();
+            addMessageToChat(`You are now known as ${newNick}.`, 'system-message');
+            checkForMail();
+        } else {
+            addMessageToChat(`* ${oldNick} is now known as ${newNick}.`, 'system-message');
+        }
+
+        // Update the online users list
+        const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === oldNick.toLowerCase());
+        if (userIndex !== -1) {
+            state.onlineUsers[userIndex] = newNick;
         }
         return;
     }
@@ -1045,19 +1066,32 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        const originalMessage = escapeHtml(parts.slice(2).join('|'));
-        const expectedHtml = `<b>IM-&gt;${recipient}</b> ${originalMessage}`;
+        const originalMessageContent = escapeHtml(parts.slice(2).join('|'));
 
-        const allMessages = Array.from(chatOutput.getElementsByTagName('p'));
-        const targetParagraph = allMessages.find(p => p.innerHTML.trim() === expectedHtml);
+        // Find the message span by its generated ID.
+        // We can't pass the ID from the server, so we search for the content.
+        // This is not ideal, but it's the best we can do without a major refactor.
+        const allSentMessages = Array.from(chatOutput.querySelectorAll('p.private-message span'));
+        const targetSpan = allSentMessages.find(span => {
+            // Recreate the expected HTML of the sent message to find a match
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = span.innerHTML;
+            const boldPart = tempDiv.querySelector('b');
+            if (!boldPart) return false;
 
-        if (targetParagraph) {
+            const textContent = tempDiv.textContent;
+            const expectedPrefix = `IM->${recipient}`;
+            // a bit fragile, but works for now.
+            return textContent.startsWith(expectedPrefix) && textContent.endsWith(originalMessageContent);
+        });
+
+        if (targetSpan && !targetSpan.querySelector('.error-message')) {
             const errorSpan = document.createElement('span');
             errorSpan.className = 'error-message';
             errorSpan.textContent = ` [Can't send: ${recipient} is not available.]`;
-            targetParagraph.appendChild(errorSpan);
-        } else {
-            addMessageToChat(`! Your IM to ${recipient} failed.`, 'error-message');
+            targetSpan.appendChild(errorSpan);
+        } else if (!targetSpan) {
+            addMessageToChat(`! Your IM to ${recipient} ("${originalMessageContent}") failed to send.`, 'error-message');
         }
         return;
     }
