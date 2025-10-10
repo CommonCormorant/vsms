@@ -200,20 +200,17 @@ function parseMarkdown(text) {
     return html;
 }
 
-function addMessageToChat(htmlContent, className = '', addToHistory = false, messageId = null) {
+function addMessageToChat(htmlContent, className = '', addToHistory = false) {
     const p = document.createElement('p');
     if (className) {
         p.className = className;
-    }
-    if (messageId) {
-        p.id = messageId;
     }
     p.innerHTML = htmlContent;
     chatOutput.appendChild(p);
     scrollToBottom();
 
     if (addToHistory) {
-        state.messageHistory.push({ content: htmlContent, className: className, id: messageId });
+        state.messageHistory.push({ content: htmlContent, className: className });
         if (state.messageHistory.length > 12) {
             state.messageHistory.shift();
         }
@@ -445,11 +442,9 @@ function handleAloneCommand() {
 }
 
 function handleImCommand(recipient, message) {
-    const messageId = `im-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const imMessage = `IM|${recipient}|${message}|${messageId}`;
+    const imMessage = `IM|${recipient}|${state.userName}|${message}`;
     serverApi.sendWsMessage(imMessage);
-    const sentImHtml = `> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`;
-    addMessageToChat(sentImHtml, 'private-message', true, messageId);
+    addMessageToChat(`> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
 }
 
 async function checkForMail() {
@@ -1048,11 +1043,7 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        const messageId = parts[parts.length - 1];
-        const originalMessageElement = document.getElementById(messageId);
-        if (originalMessageElement) {
-            originalMessageElement.innerHTML += ` <span class="private-message-fail">[Not sent. Reason: user not online]</span>`;
-        }
+        addMessageToChat(`! Your instant message to ${recipient} could not be delivered. They are not online.`, 'error-message');
         return;
     }
 

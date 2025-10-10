@@ -246,12 +246,10 @@ func (c *Client) readPump() {
 		// Route message based on type
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 3 { // IM|recipient|message
+			if len(msgParts) < 4 {
 				continue
 			}
 			recipientNick := msgParts[1]
-			messageContent := strings.Join(msgParts[2:], "|")
-
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
 			if session, ok := c.hub.sessions[c.sessionID]; ok {
@@ -265,21 +263,17 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				// Reconstruct the message with the SENDER's nickname for security and correctness
-				imMsgString := fmt.Sprintf("IM|%s|%s", c.Nickname, messageContent)
-				imMsgJson, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: imMsgString, Timestamp: time.Now(),
+				imMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: msgString, Timestamp: time.Now(),
 				})
 				select {
-				case recipientClient.send <- imMsgJson:
+				case recipientClient.send <- imMsg:
 				default:
 					log.Printf("Failed to send IM to %s, channel is full or closed.", recipientNick)
 				}
 			} else {
-				// Include the original message content in the failure notice
-				failMsgString := fmt.Sprintf("DELIVERY_FAILED|%s|%s", recipientNick, messageContent)
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: failMsgString, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
@@ -803,6 +797,16 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func storeMessage(sessionID, message, ipAddress string) error {
+	// Ping the database to ensure the connection is alive before executing the query.
+	if err := db.Ping(); err != nil {
+		log.Printf("Database ping failed: %v", err)
+		// Try to re-establish the connection.
+		initDB()
+		if err := db.Ping(); err != nil {
+			log.Printf("Database reconnect failed: %v", err)
+			return err // Return error if reconnect fails
+		}
+	}
 	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
 	if err != nil {
 		log.Printf("Failed to save message: %v", err)
@@ -812,7 +816,7 @@ func storeMessage(sessionID, message, ipAddress string) error {
 }
 
 func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
-	// Broadcast the message to all clients in the session via the hub first.
+	// Broadcast the message to all clients in the session via the hub FIRST.
 	jsonMsg, err := json.Marshal(ChatMessage{
 		SessionID: sessionID,
 		Message:   message,
@@ -824,13 +828,13 @@ func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
 		log.Printf("Failed to marshal broadcast message for hub: %v", err)
 	}
 
-	// Then, store the message in the database.
+	// Now, store the message in the database and capture any error.
 	dbErr := storeMessage(sessionID, message, ipAddress)
 	if dbErr != nil {
 		log.Printf("Failed to save broadcast message: %v", dbErr)
 	}
 
-	// Return the database error, if any, to the originating client.
+	// Return the database error, if there was one.
 	return dbErr
 }
 
