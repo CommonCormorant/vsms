@@ -501,7 +501,7 @@ function handleEncryptedMessageCommand(type, recipient, message) {
     }
 
     const encryptedMessage = encryption[type](message);
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}`;
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
     serverApi.sendWsMessage(mailMessage);
     addMessageToChat(`Your encrypted message to ${escapeHtml(recipient)} has been sent.`, 'system-message');
 }

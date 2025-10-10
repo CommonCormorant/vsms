@@ -606,13 +606,7 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	query := `SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND (
-		message LIKE '%|U' OR
-		message LIKE '%|x' OR
-		message LIKE '%|rx' OR
-		message LIKE '%|xx' OR
-		message LIKE '%|xr'
-	)`
+	query := `SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND message LIKE '%|U'`
 	rows, err := tx.Query(query, sessionID)
 	if err != nil {
 		log.Printf("Database query error in mailCheckHandler: %v", err)
@@ -623,8 +617,8 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 	messagesToDeliver := make([]ChatMessage, 0)
 	var messagesToUpdate []struct {
-		ID     int
-		NewMsg string
+		ID      int
+		NewMessage string
 	}
 
 	for rows.Next() {
@@ -636,18 +630,19 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		parts := strings.Split(msg.Message, "|")
-		if len(parts) < 4 || parts[0] != "MAIL" {
-			continue // Not a mail message
+		if len(parts) < 5 || parts[0] != "MAIL" || !strings.EqualFold(parts[2], recipientNick) {
+			continue
 		}
 
-		msgRecipient := parts[2]
-		if strings.EqualFold(msgRecipient, recipientNick) {
-			flag := parts[len(parts)-1]
-			var newFlag string
+		var newFlag string
+		var oldContentAndFlag string
 
-			switch flag {
-			case "U":
-				newFlag = "R"
+		// Correctly handle both encrypted (6+ parts) and normal (5+ parts) mail
+		// Format: MAIL|SENDER|RECIPIENT|...CONTENT...|FLAG|U
+		// or MAIL|SENDER|RECIPIENT|...CONTENT...|U
+		if len(parts) >= 6 && parts[len(parts)-1] == "U" {
+			encryptionFlag := parts[len(parts)-2]
+			switch encryptionFlag {
 			case "x":
 				newFlag = "r_x"
 			case "rx":
@@ -657,20 +652,27 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 			case "xr":
 				newFlag = "r_xr"
 			default:
-				continue // Already read or unknown flag
+				// This means it's a normal message with a pipe in it
+				newFlag = "R"
 			}
-
-			newMsg := strings.TrimSuffix(msg.Message, "|"+flag) + "|" + newFlag
-			messagesToUpdate = append(messagesToUpdate, struct {
-				ID     int
-				NewMsg string
-			}{id, newMsg})
-
-			msg.SessionID = sessionID
-			messagesToDeliver = append(messagesToDeliver, msg)
+		} else if len(parts) >= 5 && parts[len(parts)-1] == "U" {
+			newFlag = "R"
+		} else {
+			continue // Malformed or already read
 		}
-	}
 
+		// Reconstruct the message without the |U suffix, then add the new read flag
+		oldContentAndFlag = strings.TrimSuffix(msg.Message, "|U")
+		newMessage := oldContentAndFlag + "|" + newFlag
+
+		messagesToUpdate = append(messagesToUpdate, struct {
+			ID      int
+			NewMessage string
+		}{id, newMessage})
+
+		msg.SessionID = sessionID
+		messagesToDeliver = append(messagesToDeliver, msg)
+	}
 	if err := rows.Err(); err != nil {
 		log.Printf("Row iteration error in mailCheckHandler: %v", err)
 		http.Error(w, "Row iteration error", http.StatusInternalServerError)
@@ -687,7 +689,7 @@ func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
 		defer stmt.Close()
 
 		for _, update := range messagesToUpdate {
-			_, err := stmt.Exec(update.NewMsg, update.ID)
+			_, err := stmt.Exec(update.NewMessage, update.ID)
 			if err != nil {
 				log.Printf("Failed to update message status for ID %d: %v", update.ID, err)
 			}
