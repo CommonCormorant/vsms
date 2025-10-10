@@ -444,7 +444,9 @@ function handleAloneCommand() {
 function handleImCommand(recipient, message) {
     const imMessage = `IM|${recipient}|${state.userName}|${message}`;
     serverApi.sendWsMessage(imMessage);
-    addMessageToChat(`> [IM to ${escapeHtml(recipient)}]: ${escapeHtml(message)}`, 'private-message');
+
+    const messageHtml = `<b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}`;
+    addMessageToChat(messageHtml, 'private-message', true);
 }
 
 async function checkForMail() {
@@ -1043,7 +1045,20 @@ function displayBroadcastMessage(data) {
 
     if (type === 'DELIVERY_FAILED') {
         const recipient = escapeHtml(parts[1]);
-        addMessageToChat(`! Your instant message to ${recipient} could not be delivered. They are not online.`, 'error-message');
+        const originalMessage = escapeHtml(parts.slice(2).join('|'));
+        const expectedHtml = `<b>IM-&gt;${recipient}</b> ${originalMessage}`;
+
+        const allMessages = Array.from(chatOutput.getElementsByTagName('p'));
+        const targetParagraph = allMessages.find(p => p.innerHTML.trim() === expectedHtml);
+
+        if (targetParagraph) {
+            const errorSpan = document.createElement('span');
+            errorSpan.className = 'error-message';
+            errorSpan.textContent = ` [Can't send: ${recipient} is not available.]`;
+            targetParagraph.appendChild(errorSpan);
+        } else {
+            addMessageToChat(`! Your IM to ${recipient} failed.`, 'error-message');
+        }
         return;
     }
 

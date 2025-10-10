@@ -208,8 +208,28 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
-	isRegistered := false // New state flag
+	// The first message from the client must be the nickname announcement.
+	_, message, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading nickname message: %v", err)
+		return
+	}
 
+	parts := strings.Split(string(message), "|")
+	if len(parts) != 2 || parts[0] != "NICK" {
+		log.Printf("First message was not a valid NICK announcement: %s", message)
+		return
+	}
+
+	nickname := parts[1]
+	if strings.Contains(nickname, ",") || strings.Contains(nickname, "!") {
+		log.Printf("Connection rejected for invalid nickname: %s", nickname)
+		return // This closes the connection via the defer statement.
+	}
+	c.Nickname = nickname
+	c.hub.register <- c // Now register the client with the hub, so it can be announced
+
+	// After registration, loop to read subsequent messages.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -223,26 +243,7 @@ func (c *Client) readPump() {
 		msgParts := strings.Split(msgString, "|")
 		msgType := msgParts[0]
 
-		if !isRegistered {
-			// 1. Handle Nickname Registration (ONLY on the first message)
-			if msgType == "NICK" && len(msgParts) == 2 {
-				nickname := msgParts[1]
-				if !strings.Contains(nickname, ",") && !strings.Contains(nickname, "!") {
-					c.Nickname = nickname
-					c.hub.register <- c
-					isRegistered = true
-					log.Printf("Client registered with Nick: %s", nickname)
-					continue // Move to the next message read
-				}
-				log.Printf("Connection rejected for invalid nickname: %s", nickname)
-			} else {
-				log.Printf("Connection rejected. First message was not a valid NICK announcement: %s", msgString)
-			}
-			// If we reach here, registration failed, so we break and close the connection.
-			break
-		}
-
-		// 2. Handle subsequent messages (Only run after successful registration)
+		// Route message based on type
 		switch msgType {
 		case "IM":
 			if len(msgParts) < 4 {
