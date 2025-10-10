@@ -530,6 +530,23 @@ const encryption = {
     encr2: (text) => convertToHex(text).split('').reverse().join('')
 };
 
+function convertFromHex(hex) {
+    if (!hex) return '';
+    let text = '';
+    for (let i = 0; i < hex.length; i += 2) {
+        const byte = parseInt(hex.substr(i, 2), 16);
+        text += String.fromCharCode(byte);
+    }
+    return text;
+}
+
+const decryption = {
+    x: (text) => convertFromHex(text),
+    rx: (text) => convertFromHex(text).split('').reverse().join(''),
+    xx: (text) => convertFromHex(convertFromHex(text)),
+    xr: (text) => convertFromHex(text.split('').reverse().join(''))
+};
+
 function showHelp() {
     addMessageToChat(`Available commands:
         <br>/name [new_name] - Change your nickname (leave empty for random).
@@ -1029,9 +1046,16 @@ function displayBroadcastMessage(data) {
         case 'MAIL':
             const mailSender = parts[1];
             const mailRecipient = parts[2];
-            const mailContent = parts.slice(3, -1).join('|'); // Exclude status flag
+            const flag = parts[parts.length - 1];
+            let mailContent = parts.slice(3, -1).join('|');
+
             if (mailRecipient.toLowerCase() === state.userName.toLowerCase()) {
-                 html = `
+                // If the flag corresponds to a decryption method, decrypt the content
+                if (decryption[flag]) {
+                    mailContent = decryption[flag](mailContent);
+                }
+
+                html = `
                     <span class="timestamp">[${date}]</span>
                     <span style="color: var(--accent-color);">[Mail from ${escapeHtml(mailSender)}]:</span>
                     <span class="message-content">${parseMarkdown(mailContent)}</span>
