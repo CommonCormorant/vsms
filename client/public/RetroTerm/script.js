@@ -997,18 +997,6 @@ function displayBroadcastMessage(data) {
     const parts = message.split('|');
     const type = parts[0];
 
-    if (type === 'STORE_FAILED') {
-        const errorMessage = parts.slice(1).join('|');
-        addMessageToChat(`! Server Error: Could not save message. Reason: ${escapeHtml(errorMessage)}`, 'error-message');
-        return;
-    }
-
-    if (type === 'STORE_FAILED') {
-        const errorMessage = parts.slice(1).join('|');
-        addMessageToChat(`! Server Error: Could not save message. Reason: ${escapeHtml(errorMessage)}`, 'error-message');
-        return;
-    }
-
     if (type === 'KILL9_DB_ERROR') {
         addMessageToChat('***CRITICAL SERVER ERROR: Failed to delete session.***', 'error-message');
         return;
