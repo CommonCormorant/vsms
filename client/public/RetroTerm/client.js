@@ -214,40 +214,35 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
     };
 
     wsConnection.onmessage = (event) => {
+        if (!isRegistered) {
+            const message = event.data;
+            if (message.startsWith('REGISTERED|')) {
+                const parts = message.split('|');
+                clientId = parts[1];
+                const finalNickname = parts[2];
+
+                console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
+                addMessageToChat('Real-time connection established.', 'system-message');
+                reconnectAttempts = 0;
+                isRegistered = true;
+
+                if (typeof onRegistrationComplete === 'function') {
+                    onRegistrationComplete(finalNickname);
+                }
+                if (onOpenCallback) {
+                    onOpenCallback();
+                }
+            } else {
+                console.error('Expected REGISTERED message, but got:', message);
+                wsConnection.close();
+            }
+            return;
+        }
+
+        // After registration, all messages are expected to be JSON
         try {
             const data = JSON.parse(event.data);
-            const parts = data.message.split('|');
-            const type = parts[0];
-
-            if (!isRegistered) {
-                if (type === 'REGISTERED') {
-                    clientId = parts[1];
-                    const finalNickname = parts[2];
-
-                    console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
-                    addMessageToChat('Real-time connection established.', 'system-message');
-                    reconnectAttempts = 0; // Reset on successful registration
-                    isRegistered = true;
-
-                    // Update the local state with the server-confirmed nickname
-                    if (typeof onRegistrationComplete === 'function') {
-                        onRegistrationComplete(finalNickname);
-                    }
-
-                    // Trigger the original onOpen callback now that we are fully registered
-                    if (onOpenCallback) {
-                        onOpenCallback();
-                    }
-                } else {
-                    console.error('Expected REGISTERED message, but got:', data.message);
-                    wsConnection.close();
-                }
-                return; // Don't process further until registered
-            }
-
-            // After registration, pass all messages to the main callback
             onMessageCallback(data);
-
         } catch (error) {
             console.error('Error parsing WebSocket message:', error);
             console.log('Received non-JSON message from WebSocket:', event.data);
