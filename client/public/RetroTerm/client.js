@@ -6,6 +6,7 @@ let preventReconnect = false;
 const serverApi = {
     sendWsMessage(message) {
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+            console.log('Sending WS message:', message);
             wsConnection.send(message);
         } else {
             console.error('WebSocket is not connected.');
@@ -209,6 +210,7 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
     wsConnection.onmessage = (event) => {
         try {
+            console.log('Received WS message:', event.data);
             const data = JSON.parse(event.data);
 
             switch (connectionState) {

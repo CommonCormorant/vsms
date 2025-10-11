@@ -982,6 +982,7 @@ function startKillCountdown() {
 }
 
 function displayBroadcastMessage(data) {
+    console.log('Displaying broadcast message:', data);
     const { message } = data;
     const parts = message.split('|');
     const type = parts[0];
