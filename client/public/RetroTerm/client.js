@@ -293,7 +293,7 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
             const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts) + (Math.random() * 1000);
             reconnectAttempts++;
             addMessageToChat(`Connection lost. Attempting to reconnect in ${Math.round(delay / 1000)}s... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'error-message');
-            setTimeout(() => connectWebSocket(getUsername, onMessageCallback, onOpenCallback), delay);
+            setTimeout(() => connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegistrationComplete), delay);
         } else {
             addMessageToChat('Could not reconnect to the server. Please refresh the page.', 'error-message');
         }
