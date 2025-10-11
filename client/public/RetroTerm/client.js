@@ -218,7 +218,9 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                     if (data.type === 'HANDSHAKE_CHALLENGE') {
                         console.log('Handshake challenge received.');
                         const token = data.payload;
-                        const responseToken = token.substring(Math.floor(token.length / 3), Math.floor(token.length / 3) + 13);
+                        const maxStartIndex = token.length - 13;
+                        const startIndex = Math.floor(Math.random() * (maxStartIndex + 1));
+                        const responseToken = token.substring(startIndex, startIndex + 13);
 
                         const response = { type: 'HANDSHAKE_RESPONSE', payload: responseToken };
                         wsConnection.send(JSON.stringify(response));
