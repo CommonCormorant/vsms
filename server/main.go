@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,14 +82,6 @@ type HandshakeMessage struct {
 	Payload string `json:"payload"`
 }
 
-type ClientRegisterRequest struct {
-	Type    string `json:"type"`
-	Payload struct {
-		Token    string `json:"token"`
-		Nickname string `json:"nickname"`
-	} `json:"payload"`
-}
-
 type RegistrationMessage struct {
 	Type    string            `json:"type"`
 	Payload RegisteredPayload `json:"payload"`
@@ -132,7 +123,7 @@ func newHub() *Hub {
 	}
 }
 
-func (h *Hub) getAvailableNickname(sessionID, requestedNick, clientID string) string {
+func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 	h.sessionsMutex.Lock()
 	defer h.sessionsMutex.Unlock()
 
@@ -144,8 +135,7 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick, clientID string) st
 		isTaken = false
 		if session, ok := h.sessions[sessionID]; ok {
 			for client := range session {
-				// Check for nickname collision, excluding the client itself.
-				if client.ID != clientID && strings.EqualFold(client.Nickname, finalNick) {
+				if strings.EqualFold(client.Nickname, finalNick) {
 					isTaken = true
 					break
 				}
@@ -286,26 +276,45 @@ func (c *Client) readPump() {
 	challengeJSON, _ := json.Marshal(challengeMsg)
 	c.send <- challengeJSON
 
-	// 2. Wait for a single "REGISTER" message from the client
-	_, msgBytes, err := c.conn.ReadMessage()
+	// 2. Wait for client's response
+	_, responseBytes, err := c.conn.ReadMessage()
 	if err != nil {
-		log.Printf("Error reading register message: %v", err)
+		log.Printf("Error reading handshake response: %v", err)
 		return
 	}
 
-	var req ClientRegisterRequest
-	if err := json.Unmarshal(msgBytes, &req); err != nil {
-		log.Printf("Failed to unmarshal register request: %v. Message: %s", err, string(msgBytes))
+	var responseMsg HandshakeMessage
+	if err := json.Unmarshal(responseBytes, &responseMsg); err != nil {
+		log.Printf("Failed to unmarshal handshake response: %v", err)
 		return
 	}
 
-	// 3. Verify the request
-	if req.Type != "REGISTER" || len(req.Payload.Token) != 13 || !strings.Contains(challengeToken, req.Payload.Token) {
-		log.Printf("Registration failed. Invalid token in request: %s", string(msgBytes))
+	// 3. Verify response
+	if responseMsg.Type != "HANDSHAKE_RESPONSE" || len(responseMsg.Payload) != 13 || !strings.Contains(challengeToken, responseMsg.Payload) {
+		log.Printf("Handshake failed. Invalid response: %s", string(responseBytes))
 		return
 	}
 
-	requestedNick := req.Payload.Nickname
+	// --- Registration Sequence ---
+	// 1. Wait for NICK message
+	_, nickMsgBytes, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading nick message: %v", err)
+		return
+	}
+
+	var nickMsg HandshakeMessage
+	if err := json.Unmarshal(nickMsgBytes, &nickMsg); err != nil {
+		log.Printf("Failed to unmarshal nick message: %v", err)
+		return
+	}
+
+	if nickMsg.Type != "NICK" {
+		log.Printf("Expected NICK message, got: %s", nickMsg.Type)
+		return
+	}
+
+	requestedNick := nickMsg.Payload
 	if requestedNick == "" {
 		requestedNick = "guest"
 	}
@@ -316,7 +325,7 @@ func (c *Client) readPump() {
 
 	// 2. Assign a stable ID and a unique nickname.
 	c.ID = fmt.Sprintf("%x", sha256.Sum256([]byte(c.IPAddress+c.sessionID)))
-	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick, c.ID)
+	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
 
 	// 3. Send the REGISTERED message back to the client as JSON.
 	registeredPayload := RegisteredPayload{ClientID: c.ID, Nickname: c.Nickname}
@@ -337,7 +346,7 @@ func (c *Client) readPump() {
 		c.send <- promptMsg
 	}
 
-	// 5. Main message loop.
+	// 5. Main message loop. All subsequent messages must include the client's stable ID.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -347,12 +356,22 @@ func (c *Client) readPump() {
 			break
 		}
 
-		// First, try to unmarshal as a JSON command. This is more flexible.
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
+		if len(msgParts) < 2 {
+			log.Printf("Invalid message format received: %s", msgString)
+			continue
+		}
+
+		// For subsequent messages, we can be more flexible.
+		// We'll try to unmarshal as a JSON command first.
 		var jsonMsg HandshakeMessage
-		if json.Unmarshal(msgBytes, &jsonMsg) == nil {
-			// It's a valid JSON command.
+		isJSONCommand := json.Unmarshal(msgBytes, &jsonMsg) == nil
+
+		if isJSONCommand {
+			// Handle JSON-based commands like NICK
 			if jsonMsg.Type == "NICK" {
-				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload, c.ID)
+				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload)
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
 					oldName := c.Nickname
 					c.Nickname = newName
@@ -371,16 +390,14 @@ func (c *Client) readPump() {
 						c.send <- promptMsg
 					}
 				}
-				continue // Handled, move to next message.
+				continue // Move to next message
 			}
-			// Other JSON command types could be handled here in the future.
 		}
 
-		// If not a JSON command, fallback to pipe-delimited format.
-		msgString := string(msgBytes)
-		msgParts := strings.Split(msgString, "|")
+		// Fallback to pipe-delimited format for regular chat messages
+		msgParts = strings.Split(msgString, "|")
 		if len(msgParts) < 2 {
-			log.Printf("Invalid message format received (neither JSON nor valid pipe-delimited): %s", msgString)
+			log.Printf("Invalid message format received: %s", msgString)
 			continue
 		}
 
@@ -997,13 +1014,6 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	if ipAddress == "" {
 		ipAddress = r.RemoteAddr
 	}
-
-	// Strip the port from the IP address to create a stable ID.
-	host, _, err := net.SplitHostPort(ipAddress)
-	if err == nil {
-		ipAddress = host
-	}
-
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

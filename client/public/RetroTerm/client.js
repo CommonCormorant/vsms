@@ -220,18 +220,17 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
             switch (connectionState) {
                 case 'awaiting_challenge':
                     if (data.type === 'HANDSHAKE_CHALLENGE') {
-                        console.log('Handshake challenge received. Responding with registration request.');
-                        const challengeToken = data.payload;
-                        const responseToken = challengeToken.substring(Math.floor(challengeToken.length / 3), Math.floor(challengeToken.length / 3) + 13);
+                        console.log('Handshake challenge received.');
+                        const token = data.payload;
+                        const responseToken = token.substring(Math.floor(token.length / 3), Math.floor(token.length / 3) + 13);
 
-                        const registerRequest = {
-                            type: 'REGISTER',
-                            payload: {
-                                token: responseToken,
-                                nickname: getUsername()
-                            }
-                        };
-                        wsConnection.send(JSON.stringify(registerRequest));
+                        const response = { type: 'HANDSHAKE_RESPONSE', payload: responseToken };
+                        wsConnection.send(JSON.stringify(response));
+
+                        console.log('Handshake response sent. Sending NICK...');
+                        const nickMessage = { type: 'NICK', payload: getUsername() };
+                        wsConnection.send(JSON.stringify(nickMessage));
+
                         connectionState = 'awaiting_registration';
                     } else {
                         console.error('Expected HANDSHAKE_CHALLENGE, but got:', data.type);
@@ -240,12 +239,6 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                     break;
 
                 case 'awaiting_registration':
-                    // If we get the welcome message first, just process it and stay in this state.
-                    if (data.message && data.message.startsWith('WELCOME|')) {
-                         onMessageCallback(data);
-                         return; // Stay in awaiting_registration state
-                    }
-
                     if (data.type === 'REGISTERED') {
                         clientId = data.payload.clientId;
                         const finalNickname = data.payload.nickname;
@@ -262,8 +255,8 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                             onOpenCallback();
                         }
                     } else {
-                        // Don't close the connection for other message types, just log it.
-                        console.log('Ignoring unexpected message while awaiting registration:', data);
+                        console.error('Expected REGISTERED message, but got:', data.type);
+                        wsConnection.close();
                     }
                     break;
 
