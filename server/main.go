@@ -410,7 +410,8 @@ func (c *Client) readPump() {
 
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 4 {
+			if len(msgParts) < 5 {
+				log.Printf("Invalid IM format received: %s", msgString)
 				continue
 			}
 			recipientNick := msgParts[2]

@@ -30,6 +30,7 @@ let isArtWidgetLoaded = false;
 
 let state = {
     userName: 'guest',
+    baseUserName: 'guest',
     theme: 'light',
     startTime: Date.now(),
     joinTime: Date.now(),
@@ -42,6 +43,7 @@ let state = {
 function saveSettings() {
     const settings = {
         userName: state.userName,
+        baseUserName: state.baseUserName,
         theme: state.theme,
         profile: state.profile,
         joinTime: state.joinTime,
@@ -55,6 +57,7 @@ function loadSettings() {
     if (saved) {
         const settings = JSON.parse(saved);
         state.userName = settings.userName || 'guest';
+        state.baseUserName = settings.baseUserName || state.userName;
         state.theme = settings.theme || 'light';
         state.profile = settings.profile || '';
         state.joinTime = settings.joinTime || Date.now();
@@ -247,6 +250,7 @@ function handleLocalCommand(input) {
             if (newName.includes(',') || newName.includes('!')) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
             } else {
+                state.baseUserName = newName;
                 const nickMessage = { type: 'NICK', payload: newName };
                 serverApi.sendWsMessage(JSON.stringify(nickMessage));
             }
@@ -1211,7 +1215,7 @@ async function initializeApp() {
             addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
         };
 
-        connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
+        connectWebSocket(() => state.baseUserName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
 
         // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');
