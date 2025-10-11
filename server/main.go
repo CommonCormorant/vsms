@@ -497,6 +497,17 @@ func (c *Client) writePump() {
 	}
 }
 
+// --- Middleware ---
+
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // --- Main Function ---
 
 func main() {
@@ -509,18 +520,19 @@ func main() {
 	r := mux.NewRouter()
 
 	// --- Frontend Routes ---
-	r.PathPrefix("/auth/").Handler(http.StripPrefix("/auth/", http.FileServer(http.Dir("../client/public/auth"))))
-	r.PathPrefix("/auth2/").Handler(http.StripPrefix("/auth2/", http.FileServer(http.Dir("../client/public/auth2"))))
+	r.PathPrefix("/auth/").Handler(noCache(http.StripPrefix("/auth/", http.FileServer(http.Dir("../client/public/auth")))))
+	r.PathPrefix("/auth2/").Handler(noCache(http.StripPrefix("/auth2/", http.FileServer(http.Dir("../client/public/auth2")))))
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/", http.StatusFound)
 	})
 
 // --- Serve RetroTerm page under multiple aliases ---
 retroTermDir := http.Dir("../client/public/RetroTerm")
+retroTermHandler := noCache(http.StripPrefix("/", http.FileServer(retroTermDir)))
 
 aliases := []string{"/rt/", "/chat/", "/RetroTerm/", "/retroTerm/", "/term/", "/terminal/"}
 for _, alias := range aliases {
-    r.PathPrefix(alias).Handler(http.StripPrefix(alias, http.FileServer(retroTermDir)))
+    r.PathPrefix(alias).Handler(retroTermHandler)
 }
 
 // --- Redirect non-trailing-slash URLs to trailing-slash versions ---
