@@ -11,8 +11,10 @@ const serverApi = {
     },
 
     sendWsMessage(message) {
+        addMessageToChat(`DEBUG: Entered \`sendWsMessage\` with payload: "${escapeHtml(message)}"`, 'system-message');
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
             wsConnection.send(message);
+            addMessageToChat('DEBUG: Message sent over WebSocket.', 'system-message');
         } else {
             console.error('WebSocket is not connected.');
             addMessageToChat('Cannot send message: not connected to real-time server.', 'error-message');
