@@ -220,17 +220,18 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
             switch (connectionState) {
                 case 'awaiting_challenge':
                     if (data.type === 'HANDSHAKE_CHALLENGE') {
-                        console.log('Handshake challenge received.');
-                        const token = data.payload;
-                        const responseToken = token.substring(Math.floor(token.length / 3), Math.floor(token.length / 3) + 13);
+                        console.log('Handshake challenge received. Responding with registration request.');
+                        const challengeToken = data.payload;
+                        const responseToken = challengeToken.substring(Math.floor(challengeToken.length / 3), Math.floor(challengeToken.length / 3) + 13);
 
-                        const response = { type: 'HANDSHAKE_RESPONSE', payload: responseToken };
-                        wsConnection.send(JSON.stringify(response));
-
-                        console.log('Handshake response sent. Sending NICK...');
-                        const nickMessage = { type: 'NICK', payload: getUsername() };
-                        wsConnection.send(JSON.stringify(nickMessage));
-
+                        const registerRequest = {
+                            type: 'REGISTER',
+                            payload: {
+                                token: responseToken,
+                                nickname: getUsername()
+                            }
+                        };
+                        wsConnection.send(JSON.stringify(registerRequest));
                         connectionState = 'awaiting_registration';
                     } else {
                         console.error('Expected HANDSHAKE_CHALLENGE, but got:', data.type);

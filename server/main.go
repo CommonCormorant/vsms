@@ -83,6 +83,14 @@ type HandshakeMessage struct {
 	Payload string `json:"payload"`
 }
 
+type ClientRegisterRequest struct {
+	Type    string `json:"type"`
+	Payload struct {
+		Token    string `json:"token"`
+		Nickname string `json:"nickname"`
+	} `json:"payload"`
+}
+
 type RegistrationMessage struct {
 	Type    string            `json:"type"`
 	Payload RegisteredPayload `json:"payload"`
@@ -278,45 +286,26 @@ func (c *Client) readPump() {
 	challengeJSON, _ := json.Marshal(challengeMsg)
 	c.send <- challengeJSON
 
-	// 2. Wait for client's response
-	_, responseBytes, err := c.conn.ReadMessage()
+	// 2. Wait for a single "REGISTER" message from the client
+	_, msgBytes, err := c.conn.ReadMessage()
 	if err != nil {
-		log.Printf("Error reading handshake response: %v", err)
+		log.Printf("Error reading register message: %v", err)
 		return
 	}
 
-	var responseMsg HandshakeMessage
-	if err := json.Unmarshal(responseBytes, &responseMsg); err != nil {
-		log.Printf("Failed to unmarshal handshake response: %v", err)
+	var req ClientRegisterRequest
+	if err := json.Unmarshal(msgBytes, &req); err != nil {
+		log.Printf("Failed to unmarshal register request: %v. Message: %s", err, string(msgBytes))
 		return
 	}
 
-	// 3. Verify response
-	if responseMsg.Type != "HANDSHAKE_RESPONSE" || len(responseMsg.Payload) != 13 || !strings.Contains(challengeToken, responseMsg.Payload) {
-		log.Printf("Handshake failed. Invalid response: %s", string(responseBytes))
+	// 3. Verify the request
+	if req.Type != "REGISTER" || len(req.Payload.Token) != 13 || !strings.Contains(challengeToken, req.Payload.Token) {
+		log.Printf("Registration failed. Invalid token in request: %s", string(msgBytes))
 		return
 	}
 
-	// --- Registration Sequence ---
-	// 1. Wait for NICK message
-	_, nickMsgBytes, err := c.conn.ReadMessage()
-	if err != nil {
-		log.Printf("Error reading nick message: %v", err)
-		return
-	}
-
-	var nickMsg HandshakeMessage
-	if err := json.Unmarshal(nickMsgBytes, &nickMsg); err != nil {
-		log.Printf("Failed to unmarshal nick message: %v", err)
-		return
-	}
-
-	if nickMsg.Type != "NICK" {
-		log.Printf("Expected NICK message, got: %s", nickMsg.Type)
-		return
-	}
-
-	requestedNick := nickMsg.Payload
+	requestedNick := req.Payload.Nickname
 	if requestedNick == "" {
 		requestedNick = "guest"
 	}
