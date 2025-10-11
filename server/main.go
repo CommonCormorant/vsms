@@ -346,7 +346,7 @@ func (c *Client) readPump() {
 		c.send <- promptMsg
 	}
 
-	// 5. Main message loop. All subsequent messages must include the client's stable ID.
+	// 5. Main message loop.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -356,20 +356,10 @@ func (c *Client) readPump() {
 			break
 		}
 
-		msgString := string(msgBytes)
-		msgParts := strings.Split(msgString, "|")
-		if len(msgParts) < 2 {
-			log.Printf("Invalid message format received: %s", msgString)
-			continue
-		}
-
-		// For subsequent messages, we can be more flexible.
-		// We'll try to unmarshal as a JSON command first.
+		// First, try to unmarshal as a JSON command. This is more flexible.
 		var jsonMsg HandshakeMessage
-		isJSONCommand := json.Unmarshal(msgBytes, &jsonMsg) == nil
-
-		if isJSONCommand {
-			// Handle JSON-based commands like NICK
+		if json.Unmarshal(msgBytes, &jsonMsg) == nil {
+			// It's a valid JSON command.
 			if jsonMsg.Type == "NICK" {
 				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload)
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
@@ -390,14 +380,16 @@ func (c *Client) readPump() {
 						c.send <- promptMsg
 					}
 				}
-				continue // Move to next message
+				continue // Handled, move to next message.
 			}
+			// Other JSON command types could be handled here in the future.
 		}
 
-		// Fallback to pipe-delimited format for regular chat messages
-		msgParts = strings.Split(msgString, "|")
+		// If not a JSON command, fallback to pipe-delimited format.
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
 		if len(msgParts) < 2 {
-			log.Printf("Invalid message format received: %s", msgString)
+			log.Printf("Invalid message format received (neither JSON nor valid pipe-delimited): %s", msgString)
 			continue
 		}
 

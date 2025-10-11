@@ -239,6 +239,12 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                     break;
 
                 case 'awaiting_registration':
+                    // If we get the welcome message first, just process it and stay in this state.
+                    if (data.message && data.message.startsWith('WELCOME|')) {
+                         onMessageCallback(data);
+                         return; // Stay in awaiting_registration state
+                    }
+
                     if (data.type === 'REGISTERED') {
                         clientId = data.payload.clientId;
                         const finalNickname = data.payload.nickname;
@@ -255,8 +261,8 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                             onOpenCallback();
                         }
                     } else {
-                        console.error('Expected REGISTERED message, but got:', data.type);
-                        wsConnection.close();
+                        // Don't close the connection for other message types, just log it.
+                        console.log('Ignoring unexpected message while awaiting registration:', data);
                     }
                     break;
 
