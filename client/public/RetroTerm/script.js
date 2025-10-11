@@ -1202,7 +1202,7 @@ async function initializeApp() {
 
     try {
         const isNewJoiner = await initializeSession(state.userName);
-        addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
+        // addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
 
         const onOpenCallback = isNewJoiner ? async () => {
             await handleHistoryCommand();

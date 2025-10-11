@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"net/url"
+
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
@@ -96,7 +98,14 @@ type RegisteredPayload struct {
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Scheme == "https" && (u.Hostname() == "gameship.online" || strings.HasSuffix(u.Hostname(), ".gameship.online"))
+	},
 }
 
 type Hub struct {
