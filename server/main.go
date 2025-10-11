@@ -528,11 +528,10 @@ func main() {
 
 // --- Serve RetroTerm page under multiple aliases ---
 retroTermDir := http.Dir("../client/public/RetroTerm")
-retroTermHandler := noCache(http.StripPrefix("/", http.FileServer(retroTermDir)))
 
 aliases := []string{"/rt/", "/chat/", "/RetroTerm/", "/retroTerm/", "/term/", "/terminal/"}
 for _, alias := range aliases {
-    r.PathPrefix(alias).Handler(retroTermHandler)
+    r.PathPrefix(alias).Handler(noCache(http.StripPrefix(alias, http.FileServer(retroTermDir))))
 }
 
 // --- Redirect non-trailing-slash URLs to trailing-slash versions ---
