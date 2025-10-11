@@ -258,18 +258,21 @@ type Client struct {
 }
 
 func (c *Client) readPump() {
+	log.Printf("========== readPump STARTED for session %s ==========", c.sessionID)
+
 	defer func() {
+		log.Printf("========== readPump ENDED for session %s ==========", c.sessionID)
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
 
-	// --- Handshake Sequence ---
 	// 1. Generate and send challenge
 	challengeToken, err := generateSecureToken(32)
 	if err != nil {
-		log.Printf("Failed to generate challenge token: %v", err)
+		log.Printf("❌ Failed to generate challenge token: %v", err)
 		return
 	}
+	log.Printf("✓ Sending handshake challenge to session %s", c.sessionID)
 	challengeMsg := HandshakeMessage{Type: "HANDSHAKE_CHALLENGE", Payload: challengeToken}
 	challengeJSON, _ := json.Marshal(challengeMsg)
 	c.send <- challengeJSON
@@ -996,10 +999,15 @@ func whoisHandler(w http.ResponseWriter, r *http.Request) {
 
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sID")
+	log.Printf("========== WebSocket connection attempt from %s with sID: %s ==========", r.RemoteAddr, sessionID)
+
 	if !isSessionValid(sessionID) {
-		log.Printf("WebSocket connection rejected for invalid session ID: %s", sessionID)
+		log.Printf("❌ REJECTED: Invalid session ID: %s", sessionID)
+		http.Error(w, "Invalid session", http.StatusUnauthorized) // Add this!
 		return
 	}
+
+	log.Printf("✓ Session validated: %s", sessionID)
 
 	ipAddress := r.Header.Get("X-Real-IP")
 	if ipAddress == "" {
@@ -1011,9 +1019,12 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		log.Printf("❌ WebSocket upgrade failed: %v", err)
 		return
 	}
+
+	log.Printf("✓ WebSocket upgraded successfully")
+
 	client := &Client{
 		hub:       hub,
 		conn:      conn,
@@ -1021,8 +1032,8 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		sessionID: sessionID,
 		IPAddress: ipAddress,
 	}
-	// The client is now registered in the readPump after the nickname is received.
 
+	log.Printf("✓ Starting writePump and readPump for session %s", sessionID)
 	go client.writePump()
 	go client.readPump()
 }

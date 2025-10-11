@@ -453,8 +453,10 @@ function handleImCommand(recipient, message) {
         return;
     }
     const messageId = `im-${Date.now()}-${Math.random()}`;
+
+    // CHANGE THIS: Send pipe-delimited instead of JSON
     const imMessage = `IM|${state.userName}|${recipient}|${message}|${messageId}`;
-    serverApi.sendWsMessage(imMessage);
+    serverApi.sendWsMessage(imMessage); // ← Send as plain string, not JSON
 
     const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
     addMessageToChat(messageHtml, 'private-message', true);
