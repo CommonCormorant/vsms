@@ -206,46 +206,69 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
     wsConnection = new WebSocket(wsUrl);
 
-    let isRegistered = false;
+    let connectionState = 'awaiting_challenge'; // awaiting_challenge, awaiting_registration, registered
 
     wsConnection.onopen = () => {
-        console.log('WebSocket connection opened, sending NICK...');
-        wsConnection.send(`NICK|${getUsername()}`);
+        console.log('WebSocket connection opened. Awaiting handshake challenge...');
+        // Nick is now sent after handshake, not on open.
     };
 
     wsConnection.onmessage = (event) => {
-        if (!isRegistered) {
-            const message = event.data;
-            if (message.startsWith('REGISTERED|')) {
-                const parts = message.split('|');
-                clientId = parts[1];
-                const finalNickname = parts[2];
-
-                console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
-                addMessageToChat('Real-time connection established.', 'system-message');
-                reconnectAttempts = 0;
-                isRegistered = true;
-
-                if (typeof onRegistrationComplete === 'function') {
-                    onRegistrationComplete(finalNickname);
-                }
-                if (onOpenCallback) {
-                    onOpenCallback();
-                }
-            } else {
-                console.error('Expected REGISTERED message, but got:', message);
-                wsConnection.close();
-            }
-            return;
-        }
-
-        // After registration, all messages are expected to be JSON
         try {
             const data = JSON.parse(event.data);
-            onMessageCallback(data);
+
+            switch (connectionState) {
+                case 'awaiting_challenge':
+                    if (data.type === 'HANDSHAKE_CHALLENGE') {
+                        console.log('Handshake challenge received.');
+                        const token = data.payload;
+                        const responseToken = token.substring(Math.floor(token.length / 3), Math.floor(token.length / 3) + 13);
+
+                        const response = { type: 'HANDSHAKE_RESPONSE', payload: responseToken };
+                        wsConnection.send(JSON.stringify(response));
+
+                        console.log('Handshake response sent. Sending NICK...');
+                        const nickMessage = { type: 'NICK', payload: getUsername() };
+                        wsConnection.send(JSON.stringify(nickMessage));
+
+                        connectionState = 'awaiting_registration';
+                    } else {
+                        console.error('Expected HANDSHAKE_CHALLENGE, but got:', data.type);
+                        wsConnection.close();
+                    }
+                    break;
+
+                case 'awaiting_registration':
+                    if (data.type === 'REGISTERED') {
+                        clientId = data.payload.clientId;
+                        const finalNickname = data.payload.nickname;
+
+                        console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
+                        addMessageToChat('Real-time connection established.', 'system-message');
+                        reconnectAttempts = 0;
+                        connectionState = 'registered';
+
+                        if (typeof onRegistrationComplete === 'function') {
+                            onRegistrationComplete(finalNickname);
+                        }
+                        if (onOpenCallback) {
+                            onOpenCallback();
+                        }
+                    } else {
+                        console.error('Expected REGISTERED message, but got:', data.type);
+                        wsConnection.close();
+                    }
+                    break;
+
+                case 'registered':
+                    // After registration, pass all messages to the main callback
+                    onMessageCallback(data);
+                    break;
+            }
         } catch (error) {
             console.error('Error parsing WebSocket message:', error);
             console.log('Received non-JSON message from WebSocket:', event.data);
+            wsConnection.close();
         }
     };
 
