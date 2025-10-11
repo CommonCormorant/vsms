@@ -622,15 +622,9 @@ function showHelp() {
 }
 
 function handleMessage(message) {
-    addMessageToChat('DEBUG: Entered `handleMessage`.', 'system-message');
     const clientId = serverApi.getClientId();
-    if (!clientId) {
-        addMessageToChat('DEBUG: ERROR - `clientId` is null or empty. Aborting message send.', 'error-message');
-        return;
-    }
-    addMessageToChat(`DEBUG: Client ID is "${clientId}".`, 'system-message');
+    if (!clientId) return;
     const prefixedMessage = `MSG|${clientId}|${message}`;
-    addMessageToChat(`DEBUG: Sending message payload: "${escapeHtml(prefixedMessage)}"`, 'system-message');
     serverApi.sendWsMessage(prefixedMessage);
 }
 
@@ -743,7 +737,6 @@ chatForm.addEventListener('submit', async (e) => {
     const input = chatInput.value.trim();
     if (!input) return;
     chatInput.value = '';
-    addMessageToChat(`DEBUG: Input received: "${escapeHtml(input)}". Checking for commands...`, 'system-message');
 
     if (input === '🧚🏼‍♀️') {
         await handleArchiveCommand();
@@ -917,7 +910,6 @@ chatForm.addEventListener('submit', async (e) => {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');
         }
     } else {
-        addMessageToChat('DEBUG: No command detected. Treating as a normal message.', 'system-message');
         handleMessage(commandInput);
     }
 });
