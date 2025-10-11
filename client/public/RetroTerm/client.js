@@ -258,8 +258,9 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                             onOpenCallback();
                         }
                     } else {
-                        console.error('Expected REGISTERED message, but got:', data.type);
-                        wsConnection.close();
+                        // It's possible to receive other messages like WELCOME before REGISTERED
+                        // We should not close the connection here.
+                        onMessageCallback(data);
                     }
                     break;
 
