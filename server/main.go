@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1007,6 +1008,13 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	if ipAddress == "" {
 		ipAddress = r.RemoteAddr
 	}
+
+	// Strip the port from the IP address to create a stable ID.
+	host, _, err := net.SplitHostPort(ipAddress)
+	if err == nil {
+		ipAddress = host
+	}
+
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

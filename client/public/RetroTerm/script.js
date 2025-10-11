@@ -888,7 +888,9 @@ chatForm.addEventListener('submit', async (e) => {
         } else if (['roll', 'flip'].includes(command)) {
             handleBroadcastCommand(command, args);
         } else if (command === 'echo') {
-            const prefixedMessage = `ECHO||${args}`;
+            const clientId = serverApi.getClientId();
+            if (!clientId) return;
+            const prefixedMessage = `ECHO|${clientId}|${args}`;
             serverApi.sendWsMessage(prefixedMessage);
         } else if (command === 'kill') {
             if (args === '') {
