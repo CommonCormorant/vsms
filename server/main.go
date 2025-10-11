@@ -123,7 +123,7 @@ func newHub() *Hub {
 	}
 }
 
-func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
+func (h *Hub) getAvailableNickname(sessionID, requestedNick, clientID string) string {
 	h.sessionsMutex.Lock()
 	defer h.sessionsMutex.Unlock()
 
@@ -135,7 +135,8 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 		isTaken = false
 		if session, ok := h.sessions[sessionID]; ok {
 			for client := range session {
-				if strings.EqualFold(client.Nickname, finalNick) {
+				// Check for nickname collision, excluding the client itself.
+				if client.ID != clientID && strings.EqualFold(client.Nickname, finalNick) {
 					isTaken = true
 					break
 				}
@@ -325,7 +326,7 @@ func (c *Client) readPump() {
 
 	// 2. Assign a stable ID and a unique nickname.
 	c.ID = fmt.Sprintf("%x", sha256.Sum256([]byte(c.IPAddress+c.sessionID)))
-	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
+	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick, c.ID)
 
 	// 3. Send the REGISTERED message back to the client as JSON.
 	registeredPayload := RegisteredPayload{ClientID: c.ID, Nickname: c.Nickname}
@@ -361,7 +362,7 @@ func (c *Client) readPump() {
 		if json.Unmarshal(msgBytes, &jsonMsg) == nil {
 			// It's a valid JSON command.
 			if jsonMsg.Type == "NICK" {
-				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload)
+				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload, c.ID)
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
 					oldName := c.Nickname
 					c.Nickname = newName
