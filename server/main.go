@@ -295,8 +295,13 @@ func (c *Client) readPump() {
 		return
 	}
 
-	// --- Registration Sequence ---
-	// 1. Wait for NICK message
+	// 4. Send verification back to the client to prevent race condition
+	verifiedMsg := HandshakeMessage{Type: "HANDSHAKE_VERIFIED", Payload: "OK"}
+	verifiedJSON, _ := json.Marshal(verifiedMsg)
+	c.send <- verifiedJSON
+
+
+	// 5. Wait for NICK message
 	_, nickMsgBytes, err := c.conn.ReadMessage()
 	if err != nil {
 		log.Printf("Error reading nick message: %v", err)

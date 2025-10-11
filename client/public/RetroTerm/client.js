@@ -206,11 +206,10 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
     wsConnection = new WebSocket(wsUrl);
 
-    let connectionState = 'awaiting_challenge'; // awaiting_challenge, awaiting_registration, registered
+    let connectionState = 'awaiting_challenge'; // awaiting_challenge, awaiting_verification, awaiting_registration, registered
 
     wsConnection.onopen = () => {
         console.log('WebSocket connection opened. Awaiting handshake challenge...');
-        // Nick is now sent after handshake, not on open.
     };
 
     wsConnection.onmessage = (event) => {
@@ -226,14 +225,21 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
                         const response = { type: 'HANDSHAKE_RESPONSE', payload: responseToken };
                         wsConnection.send(JSON.stringify(response));
-
-                        console.log('Handshake response sent. Sending NICK...');
-                        const nickMessage = { type: 'NICK', payload: getUsername() };
-                        wsConnection.send(JSON.stringify(nickMessage));
-
-                        connectionState = 'awaiting_registration';
+                        connectionState = 'awaiting_verification';
                     } else {
                         console.error('Expected HANDSHAKE_CHALLENGE, but got:', data.type);
+                        wsConnection.close();
+                    }
+                    break;
+
+                case 'awaiting_verification':
+                    if (data.type === 'HANDSHAKE_VERIFIED') {
+                        console.log('Handshake verified. Sending NICK...');
+                        const nickMessage = { type: 'NICK', payload: getUsername() };
+                        wsConnection.send(JSON.stringify(nickMessage));
+                        connectionState = 'awaiting_registration';
+                    } else {
+                        console.error('Expected HANDSHAKE_VERIFIED, but got:', data.type);
                         wsConnection.close();
                     }
                     break;
