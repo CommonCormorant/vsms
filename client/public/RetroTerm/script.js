@@ -237,11 +237,6 @@ function handleLocalCommand(input) {
     switch (command) {
         case 'name':
         case 'nick':
-            const clientId = serverApi.getClientId();
-            if (!clientId) {
-                addMessageToChat('Error: Not registered with the server yet.', 'error-message');
-                return;
-            }
             let newName = args;
             if (!newName) {
                 const randomName = RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
@@ -322,12 +317,7 @@ function handleLocalCommand(input) {
                 return;
             }
             if (args) {
-                const clientId = serverApi.getClientId();
-                if (!clientId) {
-                    addMessageToChat('Error: Not registered with the server yet.', 'error-message');
-                    return;
-                }
-                const profileMessage = `PROFILE|${clientId}|${args}`;
+                const profileMessage = `PROFILE|${state.userName}|${args}`;
                 serverApi.sendWsMessage(profileMessage);
                 state.profile = args;
                 saveSettings();
@@ -462,14 +452,8 @@ function handleImCommand(recipient, message) {
         addMessageToChat('You must change your /name from "guest" to send an IM.', 'error-message');
         return;
     }
-    const clientId = serverApi.getClientId();
-    if (!clientId) {
-        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
-        return;
-    }
-
     const messageId = `im-${Date.now()}-${Math.random()}`;
-    const imMessage = `IM|${clientId}|${recipient}|${state.userName}|${message}|${messageId}`;
+    const imMessage = `IM|${state.userName}|${recipient}|${message}|${messageId}`;
     serverApi.sendWsMessage(imMessage);
 
     const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
@@ -520,11 +504,6 @@ function handleEncryptedMessageCommand(type, recipient, message) {
         addMessageToChat('You must change your /name from "guest" to send encrypted mail.', 'error-message');
         return;
     }
-    const clientId = serverApi.getClientId();
-    if (!clientId) {
-        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
-        return;
-    }
     const flags = {
         enc: 'x',
         encr: 'rx',
@@ -539,7 +518,7 @@ function handleEncryptedMessageCommand(type, recipient, message) {
     }
 
     const encryptedMessage = encryption[type](message);
-    const mailMessage = `MAIL|${clientId}|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
     serverApi.sendWsMessage(mailMessage);
 }
 
@@ -548,12 +527,7 @@ function handleMessageCommand(recipient, message) {
         addMessageToChat('You must change your /name from "guest" to send mail.', 'error-message');
         return;
     }
-    const clientId = serverApi.getClientId();
-    if (!clientId) {
-        addMessageToChat('Error: Not registered with the server yet.', 'error-message');
-        return;
-    }
-    const mailMessage = `MAIL|${clientId}|${state.userName}|${recipient}|${message}||U`;
+    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}||U`;
     serverApi.sendWsMessage(mailMessage);
 }
 
@@ -622,42 +596,31 @@ function showHelp() {
 }
 
 function handleMessage(message) {
-    const clientId = serverApi.getClientId();
-    if (!clientId) return;
-    const prefixedMessage = `MSG|${clientId}|${message}`;
+    const prefixedMessage = `MSG|${state.userName}|${message}`;
     serverApi.sendWsMessage(prefixedMessage);
 }
 
 function handleEmote(action) {
-    const clientId = serverApi.getClientId();
-    if (!clientId) return;
-    const emoteMessage = `EMOTE|${clientId}|${action}`;
+    const emoteMessage = `EMOTE|${state.userName}|${action}`;
     serverApi.sendWsMessage(emoteMessage);
 }
 
 function handleArt(artContent) {
-    const clientId = serverApi.getClientId();
-    if (!clientId) return;
-    const artMessage = `ART|${clientId}|${artContent}`;
+    const artMessage = `ART|${state.userName}|${artContent}`;
     serverApi.sendWsMessage(artMessage);
     artWidget.classList.add('hidden');
 }
 window.sendArt = handleArt;
 
 function handleParagraphArt(content) {
-    const clientId = serverApi.getClientId();
-    if (!clientId) return;
     const processedContent = content.replace(/\n/g, '¶');
-    const partMessage = `PART|${clientId}|${processedContent}`;
+    const partMessage = `PART|${state.userName}|${processedContent}`;
     serverApi.sendWsMessage(partMessage);
     pArtWidget.classList.add('hidden');
     pArtTextarea.value = '';
 }
 
 function handleBroadcastCommand(command, args) {
-    const clientId = serverApi.getClientId();
-    if (!clientId) return;
-
     let content = '';
     switch (command) {
         case 'roll':
@@ -672,7 +635,7 @@ function handleBroadcastCommand(command, args) {
         default:
             return;
     }
-    const prefixedMessage = `${command.toUpperCase()}|${clientId}|${content}`;
+    const prefixedMessage = `${command.toUpperCase()}|${state.userName}|${content}`;
     serverApi.sendWsMessage(prefixedMessage);
 }
 
@@ -750,9 +713,7 @@ chatForm.addEventListener('submit', async (e) => {
     if (input.startsWith('%')) {
         const echoText = input.slice(1).trim();
         if (echoText) {
-            const clientId = serverApi.getClientId();
-            if (!clientId) return;
-            const prefixedMessage = `ECHO|${clientId}|${echoText}`;
+            const prefixedMessage = `ECHO||${echoText}`;
             serverApi.sendWsMessage(prefixedMessage);
         }
         return;
@@ -898,13 +859,8 @@ chatForm.addEventListener('submit', async (e) => {
                     window.location.href = 'https://www.gameship.online/info/vsms/RetroTerm/';
                 }, 1000);
             } else if (args === '9') {
-                const clientId = serverApi.getClientId();
-                if (!clientId) {
-                    addMessageToChat('Error: Not registered with server.', 'error-message');
-                } else {
-                    const killMessage = `KILL9|${clientId}`;
-                    serverApi.sendWsMessage(killMessage);
-                }
+                const killMessage = `KILL9|${state.userName}`;
+                serverApi.sendWsMessage(killMessage);
             }
         } else {
             addMessageToChat(`Unknown command: ${commandInput}. Type /help for assistance.`, 'system-message');

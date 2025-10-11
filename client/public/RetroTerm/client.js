@@ -3,13 +3,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 1000; // 1 second
 let preventReconnect = false;
-let clientId = null; // To store the stable client ID from the server
-
 const serverApi = {
-    getClientId() {
-        return clientId;
-    },
-
     sendWsMessage(message) {
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
             wsConnection.send(message);
@@ -248,10 +242,9 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
                 case 'awaiting_registration':
                     if (data.type === 'REGISTERED') {
-                        clientId = data.payload.clientId;
                         const finalNickname = data.payload.nickname;
 
-                        console.log(`Registered with ID: ${clientId} and Nickname: ${finalNickname}`);
+                        console.log(`Registered with Nickname: ${finalNickname}`);
                         addMessageToChat('Real-time connection established.', 'system-message');
                         reconnectAttempts = 0;
                         connectionState = 'registered';

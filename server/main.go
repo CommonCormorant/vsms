@@ -88,7 +88,6 @@ type RegistrationMessage struct {
 }
 
 type RegisteredPayload struct {
-	ClientID string `json:"clientId"`
 	Nickname string `json:"nickname"`
 }
 
@@ -254,7 +253,6 @@ type Client struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	sessionID string
-	ID        string // Stable, unique identifier for the client
 	Nickname  string // Mutable, user-facing name
 	IPAddress string
 }
@@ -328,12 +326,11 @@ func (c *Client) readPump() {
 		return
 	}
 
-	// 2. Assign a stable ID and a unique nickname.
-	c.ID = fmt.Sprintf("%x", sha256.Sum256([]byte(c.IPAddress+c.sessionID)))
+	// 2. Assign a unique nickname.
 	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
 
 	// 3. Send the REGISTERED message back to the client as JSON.
-	registeredPayload := RegisteredPayload{ClientID: c.ID, Nickname: c.Nickname}
+	registeredPayload := RegisteredPayload{Nickname: c.Nickname}
 	registeredMsg := RegistrationMessage{Type: "REGISTERED", Payload: registeredPayload}
 	registeredJSON, _ := json.Marshal(registeredMsg)
 	c.send <- registeredJSON
@@ -351,7 +348,7 @@ func (c *Client) readPump() {
 		c.send <- promptMsg
 	}
 
-	// 5. Main message loop. All subsequent messages must include the client's stable ID.
+	// 6. Main message loop.
 	for {
 		_, msgBytes, err := c.conn.ReadMessage()
 		if err != nil {
@@ -361,14 +358,6 @@ func (c *Client) readPump() {
 			break
 		}
 
-		msgString := string(msgBytes)
-		msgParts := strings.Split(msgString, "|")
-		if len(msgParts) < 2 {
-			log.Printf("Invalid message format received: %s", msgString)
-			continue
-		}
-
-		// For subsequent messages, we can be more flexible.
 		// We'll try to unmarshal as a JSON command first.
 		var jsonMsg HandshakeMessage
 		isJSONCommand := json.Unmarshal(msgBytes, &jsonMsg) == nil
@@ -400,27 +389,31 @@ func (c *Client) readPump() {
 		}
 
 		// Fallback to pipe-delimited format for regular chat messages
-		msgParts = strings.Split(msgString, "|")
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
 		if len(msgParts) < 2 {
 			log.Printf("Invalid message format received: %s", msgString)
 			continue
 		}
 
-		clientID := msgParts[1]
-		if clientID != c.ID {
-			log.Printf("Message with invalid client ID received. Expected %s, got %s", c.ID, clientID)
+		msgType := msgParts[0]
+		senderNick := msgParts[1] // All pipe-delimited messages now have the nickname as the second part
+
+		// Verify the sender's nickname matches the client's nickname, unless it's a special ECHO
+		if msgType != "ECHO" && !strings.EqualFold(senderNick, c.Nickname) {
+			log.Printf("Message with invalid sender nickname received. Expected %s, got %s", c.Nickname, senderNick)
 			continue
 		}
 
-		msgType := msgParts[0]
 		switch msgType {
 		case "IM":
-			if len(msgParts) < 5 {
+			if len(msgParts) < 4 {
 				continue
 			}
 			recipientNick := msgParts[2]
-			senderNick := msgParts[3]
-			originalContent := strings.Join(msgParts[4:], "|")
+			messageContent := msgParts[3]
+			messageId := msgParts[4]
+
 
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
@@ -435,15 +428,14 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Unlock()
 
 			if recipientClient != nil {
-				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", senderNick, recipientNick, originalContent)
+				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", senderNick, recipientNick, messageContent)
 				imMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: imRelayMsg, Timestamp: time.Now(),
 				})
 				recipientClient.send <- imMsg
 			} else {
-				messageId := msgParts[len(msgParts)-1]
 				failMsg, _ := json.Marshal(ChatMessage{
-					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + originalContent + "|" + messageId, Timestamp: time.Now(),
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + messageContent + "|" + messageId, Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			}
@@ -453,30 +445,27 @@ func (c *Client) readPump() {
 		case "PROFILE":
 			if len(msgParts) > 2 {
 				profileText := strings.Join(msgParts[2:], "|")
-				profileMessage := fmt.Sprintf("PROFILE|%s|%s", c.Nickname, profileText)
+				profileMessage := fmt.Sprintf("PROFILE|%s|%s", senderNick, profileText)
 				if err := storeMessage(c.sessionID, profileMessage, c.IPAddress); err != nil {
 					log.Printf("Failed to save profile: %v", err)
 				}
 			}
 
 		case "MAIL":
-			// Mail is now sent with the stable ID, but the content format is the same
 			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
 				})
 				c.send <- failMsg
 			} else {
-				recipientNick := msgParts[3]
+				recipientNick := msgParts[2]
 				successMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: "STORE_SUCCESS|" + recipientNick, Timestamp: time.Now(),
 				})
 				c.send <- successMsg
 			}
 		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
-			// Reconstruct message with nickname instead of ID for broadcast
-			broadcastMsg := fmt.Sprintf("%s|%s|%s", msgType, c.Nickname, strings.Join(msgParts[2:], "|"))
-			if err := broadcastAndStore(c.hub, c.sessionID, broadcastMsg, c.IPAddress); err != nil {
+			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress); err != nil {
 				failMsg, _ := json.Marshal(ChatMessage{
 					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
 				})
