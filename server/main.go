@@ -165,7 +165,7 @@ func (h *Hub) run() {
 			// Get the list of current users before adding the new one.
 			var onlineUsers []string
 			if session, ok := h.sessions[client.sessionID]; ok {
-				for existingClient := range session {
+				for _, existingClient := range session {
 					if existingClient.Nickname != "" {
 						onlineUsers = append(onlineUsers, existingClient.Nickname)
 					}
