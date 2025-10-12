@@ -109,7 +109,7 @@ var upgrader = websocket.Upgrader{
 }
 
 type Hub struct {
-	sessions             map[string]map[*Client]bool
+	sessions             map[string]map[string]*Client
 	sessionsMutex        sync.Mutex
 	broadcast            chan BroadcastMessage
 	register             chan *Client
@@ -125,7 +125,7 @@ func newHub() *Hub {
 		broadcast:       make(chan BroadcastMessage),
 		register:        make(chan *Client),
 		unregister:      make(chan *Client),
-		sessions:        make(map[string]map[*Client]bool),
+		sessions:        make(map[string]map[string]*Client),
 		killRequests:    make(map[string]*KillRequestTracker),
 		departureTimers: make(map[string]*time.Timer),
 	}
@@ -142,7 +142,7 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 	for isTaken {
 		isTaken = false
 		if session, ok := h.sessions[sessionID]; ok {
-			for client := range session {
+			for _, client := range session {
 				if strings.EqualFold(client.Nickname, finalNick) {
 					isTaken = true
 					break
@@ -173,9 +173,9 @@ func (h *Hub) run() {
 			}
 
 			if _, ok := h.sessions[client.sessionID]; !ok {
-				h.sessions[client.sessionID] = make(map[*Client]bool)
+				h.sessions[client.sessionID] = make(map[string]*Client)
 			}
-			h.sessions[client.sessionID][client] = true
+			h.sessions[client.sessionID][client.connKey] = client
 			h.sessionsMutex.Unlock()
 
 			// Send the welcome message with the list of users directly to the new client.
@@ -208,8 +208,8 @@ func (h *Hub) run() {
 		case client := <-h.unregister:
 			h.sessionsMutex.Lock()
 			if session, ok := h.sessions[client.sessionID]; ok {
-				if _, ok := session[client]; ok {
-					delete(session, client)
+				if _, ok := session[client.connKey]; ok {
+					delete(session, client.connKey)
 					close(client.send)
 
 					if len(session) == 0 {
@@ -240,12 +240,12 @@ func (h *Hub) run() {
 		case message := <-h.broadcast:
 			h.sessionsMutex.Lock()
 			if session, ok := h.sessions[message.SessionID]; ok {
-				for client := range session {
+				for _, client := range session {
 					select {
 					case client.send <- message.Message:
 					default:
 						close(client.send)
-						delete(session, client)
+						delete(session, client.connKey)
 						if len(session) == 0 {
 							delete(h.sessions, message.SessionID)
 						}
@@ -262,6 +262,7 @@ type Client struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	sessionID string
+	connKey   string // The 13-character random key from the handshake
 	Nickname  string // Mutable, user-facing name
 	IPAddress string
 }
@@ -304,6 +305,7 @@ func (c *Client) readPump() {
 		log.Printf("Handshake failed. Invalid response: %s", string(responseBytes))
 		return
 	}
+	c.connKey = responseMsg.Payload
 
 	// 4. Send verification back to the client to prevent race condition
 	verifiedMsg := HandshakeMessage{Type: "HANDSHAKE_VERIFIED", Payload: "OK"}
@@ -431,7 +433,7 @@ func (c *Client) readPump() {
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
 			if session, ok := c.hub.sessions[c.sessionID]; ok {
-				for client := range session {
+				for _, client := range session {
 					if strings.EqualFold(client.Nickname, recipientNick) {
 						recipientClient = client
 						break
@@ -1198,12 +1200,12 @@ func (h *Hub) broadcastToSession(sessionID string, message []byte) {
 	defer h.sessionsMutex.Unlock()
 
 	if session, ok := h.sessions[sessionID]; ok {
-		for client := range session {
+		for _, client := range session {
 			select {
 			case client.send <- message:
 			default:
 				close(client.send)
-				delete(session, client)
+				delete(session, client.connKey)
 			}
 		}
 	}
