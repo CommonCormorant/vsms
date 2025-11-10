@@ -251,8 +251,8 @@ function handleLocalCommand(input) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
             } else {
                 state.baseUserName = newName;
-                const nickMessage = { type: 'NICK', payload: newName };
-                serverApi.sendWsMessage(JSON.stringify(nickMessage));
+                const nickMessage = `NICK|${newName}`;
+                serverApi.sendWsMessage(nickMessage);
             }
             break;
         case 'nightmode':

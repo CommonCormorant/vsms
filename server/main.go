@@ -372,14 +372,28 @@ func (c *Client) readPump() {
 			break
 		}
 
-		// We'll try to unmarshal as a JSON command first.
-		var jsonMsg HandshakeMessage
-		isJSONCommand := json.Unmarshal(msgBytes, &jsonMsg) == nil
+		// It's a JSON command.
+		// If JSON unmarshaling failed, assume it's a pipe-delimited message.
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
+		if len(msgParts) < 2 {
+			log.Printf("Invalid message format received: %s", msgString)
+			continue
+		}
 
-		if isJSONCommand {
-			// Handle JSON-based commands like NICK
-			if jsonMsg.Type == "NICK" {
-				newName := c.hub.getAvailableNickname(c.sessionID, jsonMsg.Payload)
+		msgType := msgParts[0]
+		senderNick := msgParts[1] // All pipe-delimited messages now have the nickname as the second part
+
+		// Verify the sender's nickname matches the client's nickname, unless it's a special ECHO
+		if msgType != "ECHO" && !strings.EqualFold(senderNick, c.Nickname) {
+			log.Printf("Message with invalid sender nickname received. Expected %s, got %s", c.Nickname, senderNick)
+			continue
+		}
+
+		switch msgType {
+		case "NICK":
+			if len(msgParts) >= 2 {
+				newName := c.hub.getAvailableNickname(c.sessionID, msgParts[1])
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
 					oldName := c.Nickname
 					c.Nickname = newName
@@ -398,28 +412,7 @@ func (c *Client) readPump() {
 						c.send <- promptMsg
 					}
 				}
-				continue // Move to next message
 			}
-		}
-
-		// Fallback to pipe-delimited format for regular chat messages
-		msgString := string(msgBytes)
-		msgParts := strings.Split(msgString, "|")
-		if len(msgParts) < 2 {
-			log.Printf("Invalid message format received: %s", msgString)
-			continue
-		}
-
-		msgType := msgParts[0]
-		senderNick := msgParts[1] // All pipe-delimited messages now have the nickname as the second part
-
-		// Verify the sender's nickname matches the client's nickname, unless it's a special ECHO
-		if msgType != "ECHO" && !strings.EqualFold(senderNick, c.Nickname) {
-			log.Printf("Message with invalid sender nickname received. Expected %s, got %s", c.Nickname, senderNick)
-			continue
-		}
-
-		switch msgType {
 		case "IM":
 			if len(msgParts) < 5 {
 				log.Printf("Invalid IM format received: %s", msgString)

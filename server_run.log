@@ -1,0 +1,2 @@
+2025/11/10 17:19:55 Error connecting to database: dial tcp 127.0.0.1:3306: connect: connection refused
+exit status 1
