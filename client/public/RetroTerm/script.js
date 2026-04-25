@@ -228,11 +228,17 @@ function isRetroTheme() {
 }
 
 function isEmojiOnly(text) {
-    // Check if text is a single emoji (or multiple emojis with no other characters)
-    const emojiRegex = /^[\p{Emoji}\s]+$/u;
-    const hasNonWhitespace = /\S/.test(text);
-    const emojiCount = (text.match(/\p{Emoji}/gu) || []).length;
-    return emojiRegex.test(text) && hasNonWhitespace && emojiCount >= 1 && emojiCount <= 3;
+    try {
+        // Check if text is a single emoji (or multiple emojis with no other characters)
+        const emojiRegex = /^[\p{Emoji}\s]+$/u;
+        const hasNonWhitespace = /\S/.test(text);
+        const emojiCount = (text.match(/\p{Emoji}/gu) || []).length;
+        return emojiRegex.test(text) && hasNonWhitespace && emojiCount >= 1 && emojiCount <= 3;
+    } catch (e) {
+        // Fallback for browsers that don't support Unicode property escapes (\p{Emoji})
+        console.warn('Unicode property escapes not supported, skipping big-emoji check.');
+        return false;
+    }
 }
 
 function handleLocalCommand(input) {
@@ -499,8 +505,14 @@ async function handleSummonExie(args) {
         } else {
             let errorMsg = 'Unknown error';
             try {
-                const data = await response.json();
-                errorMsg = data.message || data.error || response.statusText;
+                // Try to get text if json fails
+                const text = await response.text();
+                try {
+                    const data = JSON.parse(text);
+                    errorMsg = data.message || data.error || response.statusText;
+                } catch (e) {
+                    errorMsg = text || response.statusText;
+                }
             } catch (e) {
                 errorMsg = response.statusText;
             }
@@ -1174,6 +1186,7 @@ function displayBroadcastMessage(data) {
 
     const { date, time } = getFormattedTimestamp(data.timestamp);
     const nickname = parts[1];
+    const content = parts.slice(2).join('|');
     let html = '';
     let messageMood = '';
 
@@ -1317,10 +1330,12 @@ async function initializeApp() {
         const isNewJoiner = await initializeSession(state.userName);
         // addMessageToChat(`Connected! You are known as ${escapeHtml(state.userName)}.`, 'system-message');
 
-        const onOpenCallback = isNewJoiner ? async () => {
+        const onOpenCallback = async () => {
             await handleHistoryCommand();
-            handleEmote("has joined.");
-        } : null;
+            if (isNewJoiner) {
+                handleEmote("has joined.");
+            }
+        };
 
         const onRegistrationComplete = (finalNickname) => {
             state.userName = finalNickname;
