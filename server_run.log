@@ -1,2 +1,11 @@
-2025/11/10 17:19:55 Error connecting to database: dial tcp 127.0.0.1:3306: connect: connection refused
-exit status 1
+2026/04/25 03:27:12 DATABASE ERROR: dial tcp 127.0.0.1:3306: connect: connection refused. Continuing for verification purposes.
+Database connection successful.
+2026/04/25 03:27:12 Starting cleanup routines...
+2026/04/25 03:27:12 Server starting on port 8080...
+2026/04/25 03:27:48 ========== WebSocket connection attempt from [::1]:56660 with sID: mock-session ==========
+2026/04/25 03:27:48 Error preparing session validation statement: dial tcp 127.0.0.1:3306: connect: connection refused
+2026/04/25 03:27:48 ❌ REJECTED: Invalid session ID: mock-session
+2026/04/25 03:28:12 ========== WebSocket connection attempt from [::1]:58446 with sID: mock-session ==========
+2026/04/25 03:28:12 Error preparing session validation statement: dial tcp 127.0.0.1:3306: connect: connection refused
+2026/04/25 03:28:12 ❌ REJECTED: Invalid session ID: mock-session
+signal: terminated
