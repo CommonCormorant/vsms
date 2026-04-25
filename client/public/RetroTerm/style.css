@@ -510,3 +510,9 @@ body {
     white-space: pre-wrap;
     word-break: break-all;
 }
+
+/* Mood styling: colored left border */
+p.mood-thoughtful { border-left: 4px solid #6B3A5A !important; padding-left: 8px; }
+p.mood-warm       { border-left: 4px solid #B89EE8 !important; padding-left: 8px; }
+p.mood-playful    { border-left: 4px solid #FF6EC7 !important; padding-left: 8px; }
+p.mood-intense    { border-left: 4px solid #C44B6B !important; padding-left: 8px; }

@@ -203,10 +203,13 @@ function parseMarkdown(text) {
     return html;
 }
 
-function addMessageToChat(htmlContent, className = '', addToHistory = false) {
+function addMessageToChat(htmlContent, className = '', addToHistory = false, mood = '') {
     const p = document.createElement('p');
     if (className) {
         p.className = className;
+    }
+    if (mood) {
+        p.classList.add(`mood-${mood}`);
     }
     p.innerHTML = htmlContent;
     chatOutput.appendChild(p);
@@ -435,9 +438,76 @@ function handleLocalCommand(input) {
         case 'alone':
             handleAloneCommand();
             break;
+        case 'summon':
+            if (args.toLowerCase().startsWith('exie')) {
+                handleSummonExie(args.slice(4).trim());
+            } else {
+                addMessageToChat('Usage: /summon exie [key=key_here]', 'system-message');
+            }
+            break;
         default:
             addMessageToChat(`Unknown local command: /${command}.`, 'system-message');
             break;
+    }
+}
+
+async function handleSummonExie(args) {
+    let key = '';
+    const match = args.match(/key=(.+)/i);
+    if (match) {
+        key = match[1].trim();
+    } else if (args) {
+        key = args.trim();
+    }
+
+    const savedSettings = JSON.parse(localStorage.getItem(APP_STORAGE_KEY) || '{}');
+    if (!key && savedSettings.exieKey) {
+        key = savedSettings.exieKey;
+    }
+
+    if (!key) {
+        addMessageToChat('Exie service key required. Usage: /summon exie key=key_here', 'error-message');
+        return;
+    }
+
+    // Save key for next time
+    savedSettings.exieKey = key;
+    localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(savedSettings));
+
+    const sessionId = getSessionId();
+    if (!sessionId) {
+        addMessageToChat('Cannot summon Exie. No active session.', 'error-message');
+        return;
+    }
+
+    addMessageToChat('🤖 Summoning Exie...', 'system-message');
+
+    try {
+        const EXIE_ACTIVATE_URL = 'https://prototype.gameship.online/exiebot/activate';
+        const response = await fetch(EXIE_ACTIVATE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                services_key: key,
+                convo_key: sessionId,
+                is_vsms: true // Flag to tell Exie to use VSMS protocol
+            }),
+        });
+
+        if (response.ok) {
+            addMessageToChat('✅ Exie has been summoned to this session!', 'system-message');
+        } else {
+            let errorMsg = 'Unknown error';
+            try {
+                const data = await response.json();
+                errorMsg = data.message || data.error || response.statusText;
+            } catch (e) {
+                errorMsg = response.statusText;
+            }
+            addMessageToChat(`❌ Summoning failed: ${errorMsg}`, 'error-message');
+        }
+    } catch (error) {
+        addMessageToChat(`❌ Network error summoning Exie: ${error.message}`, 'error-message');
     }
 }
 
@@ -649,7 +719,7 @@ const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
     'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
     'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i',
-    'alone'
+    'alone', 'summon'
 ];
 
 async function handleHistoryCommand(args) {
@@ -987,6 +1057,28 @@ function startKillCountdown() {
     }, 5000);
 }
 
+function extractMood(text) {
+    let mood = '';
+    const lines = text.split('\n');
+    const kept = [];
+    const moods = ['thoughtful', 'warm', 'playful', 'intense'];
+
+    for (const line of lines) {
+        const m = line.trim().match(/^MOOD:\s*(\w+)$/i);
+        if (m) {
+            const candidate = m[1].toLowerCase();
+            if (moods.includes(candidate)) {
+                mood = candidate;
+            } else {
+                kept.push(line);
+            }
+        } else {
+            kept.push(line);
+        }
+    }
+    return { cleanText: kept.join('\n').trim(), mood };
+}
+
 function displayBroadcastMessage(data) {
     console.log('Displaying broadcast message:', data);
     const { message } = data;
@@ -1043,6 +1135,11 @@ function displayBroadcastMessage(data) {
         return;
     }
 
+    if (type === 'PONG') {
+        // App-level PONG received from server
+        return;
+    }
+
     if (type === 'JOIN' || (type === 'PART' && parts.length === 2)) {
         const user = escapeHtml(parts[1]);
         if (type === 'JOIN') {
@@ -1077,23 +1174,30 @@ function displayBroadcastMessage(data) {
 
     const { date, time } = getFormattedTimestamp(data.timestamp);
     const nickname = parts[1];
-    const content = parts.slice(2).join('|');
     let html = '';
+    let messageMood = '';
 
     switch (type) {
         case 'IM': // Incoming Instant Message
             const sender = nickname;
-            const imContent = content;
+            const imParts = parts.slice(2);
+            // parts: IM|SENDER|RECIPIENT|CONTENT|ID
+            let imContent = parts[3] || '';
+
+            const imResult = extractMood(imContent);
+            imContent = imResult.cleanText;
+            messageMood = imResult.mood;
+
             html = `
                 <span class="timestamp">[${date}]</span>
                 <span style="color: var(--accent-color-2);">[IM from ${escapeHtml(sender)}]:</span>
                 <span class="message-content">${parseMarkdown(imContent)}</span>
                 <span class="timestamp">[${time}]</span>
             `;
-            addMessageToChat(html, 'private-message', true);
+            addMessageToChat(html, 'private-message', true, messageMood);
             return; // IMs are handled completely, so we return early.
         case 'MAIL':
-            const mailSender = parts[1];
+            const mailSender = nickname;
             const mailRecipient = parts[2];
 
             if (mailRecipient.toLowerCase() !== state.userName.toLowerCase()) {
@@ -1103,6 +1207,10 @@ function displayBroadcastMessage(data) {
             // Format: MAIL|SENDER|RECIPIENT|...CONTENT...|ENC_FLAG|READ_STATUS
             const encryptionFlag = parts[parts.length - 2];
             let mailContent = parts.slice(3, parts.length - 2).join('|');
+
+            const mailResult = extractMood(mailContent);
+            mailContent = mailResult.cleanText;
+            messageMood = mailResult.mood;
 
             if (decryption[encryptionFlag]) {
                 mailContent = decryption[encryptionFlag](mailContent);
@@ -1114,11 +1222,16 @@ function displayBroadcastMessage(data) {
                 <span class="message-content">${parseMarkdown(mailContent)}</span>
                 <span class="timestamp">[${time}]</span>
             `;
-            addMessageToChat(html, 'private-message', true);
+            addMessageToChat(html, 'private-message', true, messageMood);
             return;
         case 'MSG':
-            const parsedMessage = parseMarkdown(content);
-            const emojiClass = isEmojiOnly(content) ? ' big-emoji' : '';
+            let msgContent = parts.slice(2).join('|');
+            const msgResult = extractMood(msgContent);
+            msgContent = msgResult.cleanText;
+            messageMood = msgResult.mood;
+
+            const parsedMessage = parseMarkdown(msgContent);
+            const emojiClass = isEmojiOnly(msgContent) ? ' big-emoji' : '';
             html = `
                 <span class="timestamp">[${date}]</span>
                 <span class="user-name">${escapeHtml(nickname)}:</span>
@@ -1191,7 +1304,7 @@ function displayBroadcastMessage(data) {
             break;
     }
 
-    addMessageToChat(html, 'user-message', true);
+    addMessageToChat(html, 'user-message', true, messageMood);
 }
 
 async function initializeApp() {

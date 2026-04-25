@@ -202,10 +202,17 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
     wsConnection = new WebSocket(wsUrl);
 
     let connectionState = 'awaiting_challenge'; // awaiting_challenge, awaiting_verification, awaiting_registration, registered
+    let heartbeatTimer = null;
 
     wsConnection.onopen = () => {
         console.log('WebSocket connection opened. Awaiting handshake challenge...');
-        // Nick is now sent after handshake, not on open.
+
+        heartbeatTimer = setInterval(() => {
+            if (wsConnection.readyState === WebSocket.OPEN) {
+                // Send an app-level PING
+                wsConnection.send("PING|" + getUsername());
+            }
+        }, 30000);
     };
 
     wsConnection.onmessage = (event) => {
@@ -283,6 +290,8 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
     };
 
     wsConnection.onclose = (event) => {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+
         if (preventReconnect) {
             console.log('WebSocket closed intentionally.');
             return;

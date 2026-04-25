@@ -21,6 +21,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// --- Heartbeat Constants ---
+const (
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+)
+
 // --- Structs ---
 
 type KillRequestTracker struct {
@@ -276,6 +282,13 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
+	c.conn.SetReadLimit(64 * 1024)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	// 1. Generate and send challenge
 	challengeToken, err := generateSecureToken(32)
 	if err != nil {
@@ -371,9 +384,9 @@ func (c *Client) readPump() {
 			}
 			break
 		}
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
 
-		// It's a JSON command.
-		// If JSON unmarshaling failed, assume it's a pipe-delimited message.
+		// Check for pipe-delimited messages (like heartbeat)
 		msgString := string(msgBytes)
 		msgParts := strings.Split(msgString, "|")
 		if len(msgParts) < 2 {
@@ -479,6 +492,14 @@ func (c *Client) readPump() {
 				})
 				c.send <- failMsg
 			}
+		case "PING":
+			// App-level PING to stay compatible with turtleChat-like stabilization
+			pong, _ := json.Marshal(ChatMessage{
+				SessionID: c.sessionID,
+				Message:   "PONG",
+				Timestamp: time.Now(),
+			})
+			c.send <- pong
 		default:
 			log.Printf("Unknown message type received: %s", msgType)
 		}
@@ -486,17 +507,25 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		ticker.Stop()
 		c.conn.Close()
 	}()
 	for {
 		select {
 		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			c.conn.WriteMessage(websocket.TextMessage, message)
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
