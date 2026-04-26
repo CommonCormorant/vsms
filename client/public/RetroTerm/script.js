@@ -260,7 +260,7 @@ function handleLocalCommand(input) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
             } else {
                 state.baseUserName = newName;
-                const nickMessage = `NICK|${newName}`;
+                const nickMessage = `NICK|${state.userName}|${newName}`;
                 serverApi.sendWsMessage(nickMessage);
             }
             break;
@@ -818,10 +818,10 @@ chatForm.addEventListener('submit', async (e) => {
             if (newName.includes(',') || newName.includes('!')) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
             } else {
-                state.userName = newName;
-                saveSettings();
-                addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
-                checkForMail();
+                state.baseUserName = newName;
+                const nickMessage = `NICK|${state.userName}|${newName}`;
+                serverApi.sendWsMessage(nickMessage);
+                // Note: state.userName will be updated via NICK_UPDATE from server
             }
         }
         return;
@@ -1121,18 +1121,20 @@ function displayBroadcastMessage(data) {
 
     // Handle user joining or leaving. A PART message with 2 parts is a leave event.
     if (type === 'WELCOME') {
-        const userList = parts[1] ? parts[1].split(',') : [];
-        state.onlineUsers = userList.map(u => escapeHtml(u));
-        addMessageToChat(`Online: ${state.onlineUsers.length > 0 ? state.onlineUsers.join(', ') : 'Just you!'}`, 'system-message');
+        state.onlineUsers = parts[1] ? parts[1].split(',') : [];
+        const escapedUsers = state.onlineUsers.map(u => escapeHtml(u));
+        addMessageToChat(`Online: ${escapedUsers.length > 0 ? escapedUsers.join(', ') : 'Just you!'}`, 'system-message');
         return;
     }
 
     if (type === 'NICK_UPDATE') {
-        const oldNick = escapeHtml(parts[1]);
-        const newNick = escapeHtml(parts[2]);
+        const rawOldNick = parts[1];
+        const rawNewNick = parts[2];
+        const oldNick = escapeHtml(rawOldNick);
+        const newNick = escapeHtml(rawNewNick);
 
-        if (state.userName.toLowerCase() === oldNick.toLowerCase()) {
-            state.userName = newNick;
+        if (state.userName.toLowerCase() === rawOldNick.toLowerCase()) {
+            state.userName = rawNewNick;
             saveSettings();
             addMessageToChat(`You are now known as ${newNick}.`, 'system-message');
             checkForMail();
@@ -1140,9 +1142,9 @@ function displayBroadcastMessage(data) {
             addMessageToChat(`* ${oldNick} is now known as ${newNick}.`, 'system-message');
         }
 
-        const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === oldNick.toLowerCase());
+        const userIndex = state.onlineUsers.findIndex(u => u.toLowerCase() === rawOldNick.toLowerCase());
         if (userIndex !== -1) {
-            state.onlineUsers[userIndex] = newNick;
+            state.onlineUsers[userIndex] = rawNewNick;
         }
         return;
     }
@@ -1153,14 +1155,15 @@ function displayBroadcastMessage(data) {
     }
 
     if (type === 'JOIN' || (type === 'PART' && parts.length === 2)) {
-        const user = escapeHtml(parts[1]);
+        const rawUser = parts[1];
+        const user = escapeHtml(rawUser);
         if (type === 'JOIN') {
-            if (!state.onlineUsers.find(u => u.toLowerCase() === user.toLowerCase())) {
-                state.onlineUsers.push(user);
+            if (!state.onlineUsers.find(u => u.toLowerCase() === rawUser.toLowerCase())) {
+                state.onlineUsers.push(rawUser);
             }
             addMessageToChat(`* ${user} has joined.`, 'system-message');
         } else { // PART
-            state.onlineUsers = state.onlineUsers.filter(u => u.toLowerCase() !== user.toLowerCase());
+            state.onlineUsers = state.onlineUsers.filter(u => u.toLowerCase() !== rawUser.toLowerCase());
             addMessageToChat(`* ${user} has left.`, 'system-message');
         }
         return;
@@ -1343,7 +1346,7 @@ async function initializeApp() {
             addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
         };
 
-        connectWebSocket(() => state.baseUserName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
+        connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
 
         // The WELCOME message from the WebSocket will provide the initial user list.
         addMessageToChat('Type /help for a list of commands.', 'system-message');

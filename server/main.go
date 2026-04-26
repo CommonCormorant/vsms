@@ -301,22 +301,31 @@ func (c *Client) readPump() {
 	c.send <- challengeJSON
 
 	// 2. Wait for client's response
-	_, responseBytes, err := c.conn.ReadMessage()
-	if err != nil {
-		log.Printf("Error reading handshake response: %v", err)
-		return
-	}
-
+	// We use a loop in case any unexpected non-JSON messages (like early PINGs) arrive,
+	// though the client change should prevent this.
 	var responseMsg HandshakeMessage
-	if err := json.Unmarshal(responseBytes, &responseMsg); err != nil {
-		log.Printf("Failed to unmarshal handshake response: %v", err)
-		return
-	}
+	for {
+		_, responseBytes, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("Error reading handshake response: %v", err)
+			return
+		}
 
-	// 3. Verify response
-	if responseMsg.Type != "HANDSHAKE_RESPONSE" || len(responseMsg.Payload) != 13 || !strings.Contains(challengeToken, responseMsg.Payload) {
-		log.Printf("Handshake failed. Invalid response: %s", string(responseBytes))
-		return
+		if err := json.Unmarshal(responseBytes, &responseMsg); err != nil {
+			log.Printf("Non-JSON message received during handshake (expected HANDSHAKE_RESPONSE): %s", string(responseBytes))
+			// If it's a PING or other junk, we ignore it and keep waiting for the proper response
+			continue
+		}
+
+		if responseMsg.Type == "HANDSHAKE_RESPONSE" {
+			// 3. Verify response
+			if len(responseMsg.Payload) != 13 || !strings.Contains(challengeToken, responseMsg.Payload) {
+				log.Printf("Handshake failed. Invalid response payload: %s", responseMsg.Payload)
+				return
+			}
+			break
+		}
+		log.Printf("Unexpected JSON message type during handshake: %s", responseMsg.Type)
 	}
 	c.connKey = responseMsg.Payload
 
@@ -327,21 +336,23 @@ func (c *Client) readPump() {
 
 
 	// 5. Wait for NICK message
-	_, nickMsgBytes, err := c.conn.ReadMessage()
-	if err != nil {
-		log.Printf("Error reading nick message: %v", err)
-		return
-	}
-
 	var nickMsg HandshakeMessage
-	if err := json.Unmarshal(nickMsgBytes, &nickMsg); err != nil {
-		log.Printf("Failed to unmarshal nick message: %v", err)
-		return
-	}
+	for {
+		_, nickMsgBytes, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("Error reading nick message: %v", err)
+			return
+		}
 
-	if nickMsg.Type != "NICK" {
-		log.Printf("Expected NICK message, got: %s", nickMsg.Type)
-		return
+		if err := json.Unmarshal(nickMsgBytes, &nickMsg); err != nil {
+			log.Printf("Non-JSON message received while awaiting NICK: %s", string(nickMsgBytes))
+			continue
+		}
+
+		if nickMsg.Type == "NICK" {
+			break
+		}
+		log.Printf("Unexpected JSON message type while awaiting NICK: %s", nickMsg.Type)
 	}
 
 	requestedNick := nickMsg.Payload
@@ -397,16 +408,18 @@ func (c *Client) readPump() {
 		msgType := msgParts[0]
 		senderNick := msgParts[1] // All pipe-delimited messages now have the nickname as the second part
 
-		// Verify the sender's nickname matches the client's nickname, unless it's a special ECHO
-		if msgType != "ECHO" && !strings.EqualFold(senderNick, c.Nickname) {
-			log.Printf("Message with invalid sender nickname received. Expected %s, got %s", c.Nickname, senderNick)
+		// Verify the sender's nickname matches the client's nickname.
+		// We allow "NICK" to pass through so users can change their names.
+		// We also allow "ECHO" to pass through as it's often used for system prompts or anonymous echoes.
+		if msgType != "ECHO" && msgType != "NICK" && !strings.EqualFold(senderNick, c.Nickname) {
+			log.Printf("Message with invalid sender nickname received. Type: %s, Expected: %s, Got: %s", msgType, c.Nickname, senderNick)
 			continue
 		}
 
 		switch msgType {
 		case "NICK":
-			if len(msgParts) >= 2 {
-				newName := c.hub.getAvailableNickname(c.sessionID, msgParts[1])
+			if len(msgParts) >= 3 {
+				newName := c.hub.getAvailableNickname(c.sessionID, msgParts[2])
 				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
 					oldName := c.Nickname
 					c.Nickname = newName

@@ -4,16 +4,6 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 1000; // 1 second
 let preventReconnect = false;
 const serverApi = {
-	sendWsMessage(message) {
-    const dbg = document.getElementById('debug-log');
-    if (dbg) dbg.innerHTML += '<div>SEND: ' + message.substring(0,80) + '</div>';
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-        wsConnection.send(message);
-    } else {
-        addMessageToChat('Cannot send message: not connected.', 'error-message');
-    }
-},
-	/*
     sendWsMessage(message) {
         if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
             console.log('Sending WS message:', message);
@@ -23,7 +13,6 @@ const serverApi = {
             addMessageToChat('Cannot send message: not connected to real-time server.', 'error-message');
         }
     },
-*/
     async requestToken(name) {
         const response = await fetch('/api/auth/request', {
             method: 'POST',
@@ -216,13 +205,6 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
 
     wsConnection.onopen = () => {
         console.log('WebSocket connection opened. Awaiting handshake challenge...');
-
-        heartbeatTimer = setInterval(() => {
-            if (wsConnection.readyState === WebSocket.OPEN) {
-                // Send an app-level PING
-                wsConnection.send("PING|" + getUsername());
-            }
-        }, 30000);
     };
 
     wsConnection.onmessage = (event) => {
@@ -269,6 +251,14 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                         addMessageToChat('Real-time connection established.', 'system-message');
                         reconnectAttempts = 0;
                         connectionState = 'registered';
+
+                        // Start heartbeat only after registration is complete
+                        heartbeatTimer = setInterval(() => {
+                            if (wsConnection.readyState === WebSocket.OPEN) {
+                                // Send an app-level PING
+                                wsConnection.send("PING|" + getUsername());
+                            }
+                        }, 30000);
 
                         if (typeof onRegistrationComplete === 'function') {
                             onRegistrationComplete(finalNickname);
