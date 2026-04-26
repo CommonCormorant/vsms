@@ -598,8 +598,8 @@ for from, to := range redirects {
 		serveWs(hub, w, r)
 	})
 
-	log.Println("Server starting on port 8080...")
-	if err := http.ListenAndServe(":8080", r); err != nil {
+	log.Println("Server starting on port 8767...")
+	if err := http.ListenAndServe(":8767", r); err != nil {
 		log.Fatal(err)
 	}
 }
