@@ -285,7 +285,7 @@ func main() {
 		model.AddMessageTokens(toks)
 	}
 
-	fmt.Println("\nGenerated output:\n")
+	fmt.Println("\nGenerated output:")
 	for i := 0; i < genSentences; i++ {
 		fmt.Println(model.GenerateSentence(maxWords))
 	}
