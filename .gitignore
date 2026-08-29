@@ -22,3 +22,6 @@ go.work
 
 # server binary
 server/serverserver/vsms-d
+
+# Build products
+server/vsms-d
