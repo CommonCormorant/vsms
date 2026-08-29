@@ -21,4 +21,4 @@ go.work
 .vscode/
 
 # server binary
-server/server
+server/serverserver/vsms-d
