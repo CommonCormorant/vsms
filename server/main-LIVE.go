@@ -1,0 +1,1368 @@
+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"net/url"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+)
+
+// --- Structs ---
+
+type KillRequestTracker struct {
+	Count     int
+	Timestamp time.Time
+}
+
+type AuthRequestPayload struct {
+	Name string `json:"name"`
+}
+
+type AuthResponse struct {
+	Token string `json:"token"`
+}
+
+type VerifyRequestPayload struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+type VerifyResponse struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+type MailOutResponse struct {
+	Total  int `json:"total"`
+	Read   int `json:"read"`
+	Unread int `json:"unread"`
+}
+
+type WhoisResponse struct {
+	FirstArrived string `json:"first_arrived"`
+	Location     string `json:"location"`
+	MessageCount int    `json:"message_count"`
+	Profile      string `json:"profile"`
+}
+
+type GeoInfo struct {
+    Status  string `json:"status"`
+    Country string `json:"country"`
+    Region  string `json:"regionName"`
+    City    string `json:"city"`
+}
+
+type ChatMessage struct {
+	SessionID string    `json:"session_id"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	IPAddress string    `json:"-"` // Ignored in JSON responses
+}
+
+type BroadcastMessage struct {
+	SessionID string
+	Message   []byte
+}
+
+// --- Handshake and Registration Structs ---
+type HandshakeMessage struct {
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+}
+
+type RegistrationMessage struct {
+	Type    string            `json:"type"`
+	Payload RegisteredPayload `json:"payload"`
+}
+
+type RegisteredPayload struct {
+	Nickname string `json:"nickname"`
+}
+
+// --- WebSocket ---
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Scheme == "https" && (u.Hostname() == "gameship.online" || strings.HasSuffix(u.Hostname(), ".gameship.online"))
+	},
+}
+
+type Hub struct {
+	sessions             map[string]map[string]*Client
+	sessionsMutex        sync.Mutex
+	broadcast            chan BroadcastMessage
+	register             chan *Client
+	unregister           chan *Client
+	killRequests         map[string]*KillRequestTracker
+	killRequestsMutex    sync.Mutex
+	departureTimers      map[string]*time.Timer
+	departureTimersMutex sync.Mutex
+}
+
+func newHub() *Hub {
+	return &Hub{
+		broadcast:       make(chan BroadcastMessage),
+		register:        make(chan *Client),
+		unregister:      make(chan *Client),
+		sessions:        make(map[string]map[string]*Client),
+		killRequests:    make(map[string]*KillRequestTracker),
+		departureTimers: make(map[string]*time.Timer),
+	}
+}
+
+func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
+	h.sessionsMutex.Lock()
+	defer h.sessionsMutex.Unlock()
+
+	finalNick := requestedNick
+	suffix := 1
+	isTaken := true
+
+	for isTaken {
+		isTaken = false
+		if session, ok := h.sessions[sessionID]; ok {
+			for _, client := range session {
+				if strings.EqualFold(client.Nickname, finalNick) {
+					isTaken = true
+					break
+				}
+			}
+		}
+		if isTaken {
+			finalNick = fmt.Sprintf("%s_%d", requestedNick, suffix)
+			suffix++
+		}
+	}
+	return finalNick
+}
+
+func (h *Hub) run() {
+	for {
+		select {
+		case client := <-h.register:
+			h.sessionsMutex.Lock()
+			// Get the list of current users before adding the new one.
+			var onlineUsers []string
+			if session, ok := h.sessions[client.sessionID]; ok {
+				for _, existingClient := range session {
+					if existingClient.Nickname != "" {
+						onlineUsers = append(onlineUsers, existingClient.Nickname)
+					}
+				}
+			}
+
+			if _, ok := h.sessions[client.sessionID]; !ok {
+				h.sessions[client.sessionID] = make(map[string]*Client)
+			}
+			h.sessions[client.sessionID][client.connKey] = client
+			h.sessionsMutex.Unlock()
+
+			// Send the welcome message with the list of users directly to the new client.
+			welcomeMsg, _ := json.Marshal(ChatMessage{
+				SessionID: client.sessionID,
+				Message:   "WELCOME|" + strings.Join(onlineUsers, ","),
+				Timestamp: time.Now(),
+			})
+			client.send <- welcomeMsg
+
+			// If the user is reconnecting, cancel their departure timer
+			timerKey := client.sessionID + ":" + client.Nickname
+			h.departureTimersMutex.Lock()
+			if timer, ok := h.departureTimers[timerKey]; ok {
+				timer.Stop()
+				delete(h.departureTimers, timerKey)
+			} else {
+				// Otherwise, announce their arrival to the session
+				if client.Nickname != "" {
+					joinMsg, _ := json.Marshal(ChatMessage{
+						SessionID: client.sessionID,
+						Message:   "JOIN|" + client.Nickname,
+						Timestamp: time.Now(),
+					})
+					h.broadcast <- BroadcastMessage{SessionID: client.sessionID, Message: joinMsg}
+				}
+			}
+			h.departureTimersMutex.Unlock()
+
+		case client := <-h.unregister:
+			h.sessionsMutex.Lock()
+			if session, ok := h.sessions[client.sessionID]; ok {
+				if _, ok := session[client.connKey]; ok {
+					delete(session, client.connKey)
+					close(client.send)
+
+					if len(session) == 0 {
+						delete(h.sessions, client.sessionID)
+					}
+
+					// If the user had a nickname, start a departure timer to handle flaky connections
+					if client.Nickname != "" {
+						timerKey := client.sessionID + ":" + client.Nickname
+						h.departureTimersMutex.Lock()
+						h.departureTimers[timerKey] = time.AfterFunc(30*time.Second, func() {
+							partMsg, _ := json.Marshal(ChatMessage{
+								SessionID: client.sessionID,
+								Message:   "PART|" + client.Nickname,
+								Timestamp: time.Now(),
+							})
+							h.broadcast <- BroadcastMessage{SessionID: client.sessionID, Message: partMsg}
+							h.departureTimersMutex.Lock()
+							delete(h.departureTimers, timerKey)
+							h.departureTimersMutex.Unlock()
+						})
+						h.departureTimersMutex.Unlock()
+					}
+				}
+			}
+			h.sessionsMutex.Unlock()
+
+		case message := <-h.broadcast:
+			h.sessionsMutex.Lock()
+			if session, ok := h.sessions[message.SessionID]; ok {
+				for _, client := range session {
+					select {
+					case client.send <- message.Message:
+					default:
+						close(client.send)
+						delete(session, client.connKey)
+						if len(session) == 0 {
+							delete(h.sessions, message.SessionID)
+						}
+					}
+				}
+			}
+			h.sessionsMutex.Unlock()
+		}
+	}
+}
+
+type Client struct {
+	hub       *Hub
+	conn      *websocket.Conn
+	send      chan []byte
+	sessionID string
+	connKey   string // The 13-character random key from the handshake
+	Nickname  string // Mutable, user-facing name
+	IPAddress string
+}
+
+func (c *Client) readPump() {
+	log.Printf("========== readPump STARTED for session %s ==========", c.sessionID)
+
+	defer func() {
+		log.Printf("========== readPump ENDED for session %s ==========", c.sessionID)
+		c.hub.unregister <- c
+		c.conn.Close()
+	}()
+
+	// 1. Generate and send challenge
+	challengeToken, err := generateSecureToken(32)
+	if err != nil {
+		log.Printf("❌ Failed to generate challenge token: %v", err)
+		return
+	}
+	log.Printf("✓ Sending handshake challenge to session %s", c.sessionID)
+	challengeMsg := HandshakeMessage{Type: "HANDSHAKE_CHALLENGE", Payload: challengeToken}
+	challengeJSON, _ := json.Marshal(challengeMsg)
+	c.send <- challengeJSON
+
+	// 2. Wait for client's response
+	_, responseBytes, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading handshake response: %v", err)
+		return
+	}
+
+	var responseMsg HandshakeMessage
+	if err := json.Unmarshal(responseBytes, &responseMsg); err != nil {
+		log.Printf("Failed to unmarshal handshake response: %v", err)
+		return
+	}
+
+	// 3. Verify response
+	if responseMsg.Type != "HANDSHAKE_RESPONSE" || len(responseMsg.Payload) != 13 || !strings.Contains(challengeToken, responseMsg.Payload) {
+		log.Printf("Handshake failed. Invalid response: %s", string(responseBytes))
+		return
+	}
+	c.connKey = responseMsg.Payload
+
+	// 4. Send verification back to the client to prevent race condition
+	verifiedMsg := HandshakeMessage{Type: "HANDSHAKE_VERIFIED", Payload: "OK"}
+	verifiedJSON, _ := json.Marshal(verifiedMsg)
+	c.send <- verifiedJSON
+
+
+	// 5. Wait for NICK message
+	_, nickMsgBytes, err := c.conn.ReadMessage()
+	if err != nil {
+		log.Printf("Error reading nick message: %v", err)
+		return
+	}
+
+	var nickMsg HandshakeMessage
+	if err := json.Unmarshal(nickMsgBytes, &nickMsg); err != nil {
+		log.Printf("Failed to unmarshal nick message: %v", err)
+		return
+	}
+
+	if nickMsg.Type != "NICK" {
+		log.Printf("Expected NICK message, got: %s", nickMsg.Type)
+		return
+	}
+
+	requestedNick := nickMsg.Payload
+	if requestedNick == "" {
+		requestedNick = "guest"
+	}
+	if strings.Contains(requestedNick, ",") || strings.Contains(requestedNick, "!") {
+		log.Printf("Connection rejected for invalid nickname: %s", requestedNick)
+		return
+	}
+
+	// 2. Assign a unique nickname.
+	c.Nickname = c.hub.getAvailableNickname(c.sessionID, requestedNick)
+
+	// 3. Send the REGISTERED message back to the client as JSON.
+	registeredPayload := RegisteredPayload{Nickname: c.Nickname}
+	registeredMsg := RegistrationMessage{Type: "REGISTERED", Payload: registeredPayload}
+	registeredJSON, _ := json.Marshal(registeredMsg)
+	c.send <- registeredJSON
+
+	// 4. Now, register the client with the hub.
+	c.hub.register <- c
+
+	// 5. If the user is a guest, send them a special prompt.
+	if strings.HasPrefix(c.Nickname, "guest") {
+		promptMsg, _ := json.Marshal(ChatMessage{
+			SessionID: c.sessionID,
+			Message:   "ECHO|***SYSTEM MESSAGE***: **Please update your /name**",
+			Timestamp: time.Now(),
+		})
+		c.send <- promptMsg
+	}
+
+	// 6. Main message loop.
+	for {
+		_, msgBytes, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("error: %v", err)
+			}
+			break
+		}
+
+		// It's a JSON command.
+		// If JSON unmarshaling failed, assume it's a pipe-delimited message.
+		msgString := string(msgBytes)
+		msgParts := strings.Split(msgString, "|")
+		if len(msgParts) < 2 {
+			log.Printf("Invalid message format received: %s", msgString)
+			continue
+		}
+
+		msgType := msgParts[0]
+		senderNick := msgParts[1] // All pipe-delimited messages now have the nickname as the second part
+
+		// Verify the sender's nickname matches the client's nickname, unless it's a special ECHO
+		if msgType != "ECHO" && !strings.EqualFold(senderNick, c.Nickname) {
+			log.Printf("Message with invalid sender nickname received. Expected %s, got %s", c.Nickname, senderNick)
+			continue
+		}
+
+		switch msgType {
+		case "NICK":
+			if len(msgParts) >= 2 {
+				newName := c.hub.getAvailableNickname(c.sessionID, msgParts[1])
+				if !strings.Contains(newName, ",") && !strings.Contains(newName, "!") {
+					oldName := c.Nickname
+					c.Nickname = newName
+					updateMsg := fmt.Sprintf("NICK_UPDATE|%s|%s", oldName, newName)
+					broadcastJson, _ := json.Marshal(ChatMessage{
+						SessionID: c.sessionID, Message: updateMsg, Timestamp: time.Now(),
+					})
+					c.hub.broadcast <- BroadcastMessage{SessionID: c.sessionID, Message: broadcastJson}
+
+					if strings.HasPrefix(c.Nickname, "guest") {
+						promptMsg, _ := json.Marshal(ChatMessage{
+							SessionID: c.sessionID,
+							Message:   "ECHO|***SYSTEM MESSAGE***: **Please update your /name**",
+							Timestamp: time.Now(),
+						})
+						c.send <- promptMsg
+					}
+				}
+			}
+		case "IM":
+			if len(msgParts) < 5 {
+				log.Printf("Invalid IM format received: %s", msgString)
+				continue
+			}
+			recipientNick := msgParts[2]
+			messageContent := msgParts[3]
+			messageId := msgParts[4]
+
+
+			c.hub.sessionsMutex.Lock()
+			var recipientClient *Client
+			if session, ok := c.hub.sessions[c.sessionID]; ok {
+				for _, client := range session {
+					if strings.EqualFold(client.Nickname, recipientNick) {
+						recipientClient = client
+						break
+					}
+				}
+			}
+			c.hub.sessionsMutex.Unlock()
+
+			if recipientClient != nil {
+				imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", senderNick, recipientNick, messageContent)
+				imMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: imRelayMsg, Timestamp: time.Now(),
+				})
+				recipientClient.send <- imMsg
+			} else {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: "DELIVERY_FAILED|" + recipientNick + "|" + messageContent + "|" + messageId, Timestamp: time.Now(),
+				})
+				c.send <- failMsg
+			}
+		case "KILL9":
+			go handleKill9Request(c.hub, c.sessionID, c.Nickname)
+
+		case "PROFILE":
+			if len(msgParts) > 2 {
+				profileText := strings.Join(msgParts[2:], "|")
+				profileMessage := fmt.Sprintf("PROFILE|%s|%s", senderNick, profileText)
+				if err := storeMessage(c.sessionID, profileMessage, c.IPAddress); err != nil {
+					log.Printf("Failed to save profile: %v", err)
+				}
+			}
+
+		case "MAIL":
+			if err := storeMessage(c.sessionID, msgString, c.IPAddress); err != nil {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
+				})
+				c.send <- failMsg
+			} else {
+				recipientNick := msgParts[2]
+				successMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: "STORE_SUCCESS|" + recipientNick, Timestamp: time.Now(),
+				})
+				c.send <- successMsg
+			}
+		case "MSG", "EMOTE", "ART", "PART", "ROLL", "FLIP", "ECHO":
+			if err := broadcastAndStore(c.hub, c.sessionID, msgString, c.IPAddress); err != nil {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: "STORE_FAILED|" + err.Error(), Timestamp: time.Now(),
+				})
+				c.send <- failMsg
+			}
+		default:
+			log.Printf("Unknown message type received: %s", msgType)
+		}
+	}
+}
+
+func (c *Client) writePump() {
+	defer func() {
+		c.conn.Close()
+	}()
+	for {
+		select {
+		case message, ok := <-c.send:
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			c.conn.WriteMessage(websocket.TextMessage, message)
+		}
+	}
+}
+
+// --- Middleware ---
+
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- Main Function ---
+
+func main() {
+	initDB()
+	startCleanupRoutines()
+
+	hub := newHub()
+	go hub.run()
+
+	r := mux.NewRouter()
+
+	// --- Frontend Routes ---
+	r.PathPrefix("/auth/").Handler(noCache(http.StripPrefix("/auth/", http.FileServer(http.Dir("../client/public/auth")))))
+	r.PathPrefix("/auth2/").Handler(noCache(http.StripPrefix("/auth2/", http.FileServer(http.Dir("../client/public/auth2")))))
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/auth/", http.StatusFound)
+	})
+
+// --- Serve RetroTerm page under multiple aliases ---
+retroTermDir := http.Dir("../client/public/RetroTerm")
+
+aliases := []string{"/rt/", "/chat/", "/RetroTerm/", "/retroTerm/", "/term/", "/terminal/"}
+for _, alias := range aliases {
+    r.PathPrefix(alias).Handler(noCache(http.StripPrefix(alias, http.FileServer(retroTermDir))))
+}
+
+// --- Redirect non-trailing-slash URLs to trailing-slash versions ---
+redirects := map[string]string{
+    "/rt":        "/rt/",
+    "/chat":      "/chat/",
+    "/RetroTerm": "/RetroTerm/",
+    "/retroTerm": "/retroTerm/",
+    "/term":      "/term/",
+    "/terminal":  "/terminal/",
+}
+
+for from, to := range redirects {
+    r.HandleFunc(from, func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, to, http.StatusFound)
+    })
+}
+
+	// --- API Routes ---
+	api := r.PathPrefix("/api").Subrouter()
+	api.HandleFunc("/auth/request", requestTokenHandler).Methods("POST")
+	api.HandleFunc("/auth/verify", verifyTokenHandler).Methods("POST")
+	api.HandleFunc("/history", historyHandler).Methods("GET")
+	api.HandleFunc("/archive", archiveHandler).Methods("GET")
+	api.HandleFunc("/session/check", sessionCheckHandler).Methods("GET")
+	api.HandleFunc("/session/was_deleted", wasDeletedHandler).Methods("GET")
+	api.HandleFunc("/mail/check", mailCheckHandler).Methods("GET")
+	api.HandleFunc("/mail/out", mailOutHandler).Methods("GET")
+	api.HandleFunc("/whois", whoisHandler).Methods("GET")
+	api.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWs(hub, w, r)
+	})
+
+	log.Println("Server starting on port 8080...")
+	if err := http.ListenAndServe(":8080", r); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// --- Database ---
+
+var db *sql.DB
+var dbMutex = &sync.Mutex{}
+
+func initDB() {
+	dsn := "vsmsuser:/BunHun01Run%@tcp(127.0.0.1:3306)/vsms?parseTime=true"
+	var err error
+	db, err = sql.Open("mysql", dsn)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+
+	// Configure the connection pool
+	db.SetConnMaxLifetime(time.Minute * 1) // Force connections to be recycled every minute
+	db.SetConnMaxIdleTime(time.Second * 30) // Close connections that are idle for 30 seconds
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
+
+	if err = db.Ping(); err != nil {
+		log.Fatalf("Error connecting to database: %v", err)
+	}
+	fmt.Println("Database connection successful.")
+}
+
+// --- API Handlers ---
+
+func requestTokenHandler(w http.ResponseWriter, r *http.Request) {
+	var payload AuthRequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if payload.Name == "" {
+		http.Error(w, "Name is required", http.StatusBadRequest)
+		return
+	}
+
+	userNameHash := hashName(payload.Name)
+	token, err := generateSecureToken(32)
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	ipAddress := r.Header.Get("X-Real-IP")
+if ipAddress == "" {
+    ipAddress = r.Header.Get("X-Forwarded-For")
+}
+if ipAddress == "" {
+    ipAddress = r.RemoteAddr
+}
+	stmt, err := db.Prepare("INSERT INTO auth_tokens(user_name_hash, token, ip_address, created_at) VALUES(?, ?, ?, ?)")
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(userNameHash, token, ipAddress, time.Now())
+	if err != nil {
+		http.Error(w, "Failed to save token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AuthResponse{Token: token})
+}
+
+func verifyTokenHandler(w http.ResponseWriter, r *http.Request) {
+	var payload VerifyRequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if payload.Name == "" || payload.Token == "" {
+		http.Error(w, "Name and token are required", http.StatusBadRequest)
+		return
+	}
+
+	userNameHash := hashName(payload.Name)
+
+	var id int
+	var createdAt time.Time
+	err := db.QueryRow("SELECT id, created_at FROM auth_tokens WHERE user_name_hash = ? AND token = ?", userNameHash, payload.Token).Scan(&id, &createdAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Invalid name or token", http.StatusUnauthorized)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if time.Since(createdAt) > (90 * time.Minute) {
+		go deleteAuthTokenByID(id)
+		http.Error(w, "Token expired", http.StatusUnauthorized)
+		return
+	}
+
+	sessionID, err := generateSecureToken(32)
+	if err != nil {
+		http.Error(w, "Failed to generate session ID", http.StatusInternalServerError)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("INSERT INTO sessions(session_id, user_name_hash, created_at, last_seen_at) VALUES(?, ?, ?, ?)", sessionID, userNameHash, time.Now(), time.Now())
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("DELETE FROM auth_tokens WHERE id = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, "Failed to cleanup token", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(VerifyResponse{
+		SessionID: sessionID,
+		Message:   "Authentication successful",
+	})
+}
+
+func historyHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		http.Error(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	minutesStr := r.URL.Query().Get("minutes")
+	if minutesStr == "" {
+		minutesStr = "15" // Default to 15 minutes
+	}
+
+	minutes, err := strconv.Atoi(minutesStr)
+	if err != nil {
+		http.Error(w, "Invalid minutes parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Clamp minutes between 1 and 90
+	if minutes < 1 {
+		minutes = 1
+	}
+	if minutes > 90 {
+		minutes = 90
+	}
+
+	timeLimit := time.Now().Add(-time.Duration(minutes) * time.Minute)
+
+	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND created_at >= ? AND message NOT LIKE 'PROFILE|%' AND message NOT LIKE 'MAIL|%' ORDER BY created_at ASC", sessionID, timeLimit)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	messages := make([]ChatMessage, 0)
+	for rows.Next() {
+		var msg ChatMessage
+		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {
+			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
+}
+
+func archiveHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	if sessionID == "" {
+		http.Error(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := db.Query("SELECT session_id, message, created_at FROM chat_messages WHERE session_id = ? AND message NOT LIKE 'PROFILE|%' AND message NOT LIKE 'MAIL|%' ORDER BY created_at ASC", sessionID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	messages := make([]ChatMessage, 0)
+	for rows.Next() {
+		var msg ChatMessage
+		if err := rows.Scan(&msg.SessionID, &msg.Message, &msg.Timestamp); err != nil {
+			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messages)
+}
+
+func mailCheckHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	recipientNick := r.URL.Query().Get("nick")
+	if sessionID == "" || recipientNick == "" {
+		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("Failed to start transaction: %v", err)
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	query := `SELECT id, message, created_at FROM chat_messages WHERE session_id = ? AND message LIKE '%|U'`
+	rows, err := tx.Query(query, sessionID)
+	if err != nil {
+		log.Printf("Database query error in mailCheckHandler: %v", err)
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	messagesToDeliver := make([]ChatMessage, 0)
+	var messagesToUpdate []struct {
+		ID      int
+		NewMessage string
+	}
+
+	for rows.Next() {
+		var msg ChatMessage
+		var id int
+		if err := rows.Scan(&id, &msg.Message, &msg.Timestamp); err != nil {
+			log.Printf("Failed to scan message row in mailCheckHandler: %v", err)
+			continue
+		}
+
+		parts := strings.Split(msg.Message, "|")
+		if len(parts) < 5 || parts[0] != "MAIL" || !strings.EqualFold(parts[2], recipientNick) {
+			continue
+		}
+
+		// Simply replace the final "|U" with "|R" to mark as read, preserving all other parts.
+		if !strings.HasSuffix(msg.Message, "|U") {
+			continue // Already read or malformed
+		}
+		newMessage := strings.TrimSuffix(msg.Message, "|U") + "|R"
+
+		messagesToUpdate = append(messagesToUpdate, struct {
+			ID         int
+			NewMessage string
+		}{id, newMessage})
+
+		msg.SessionID = sessionID
+		messagesToDeliver = append(messagesToDeliver, msg)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error in mailCheckHandler: %v", err)
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	if len(messagesToUpdate) > 0 {
+		stmt, err := tx.Prepare("UPDATE chat_messages SET message = ? WHERE id = ?")
+		if err != nil {
+			log.Printf("Failed to prepare update statement in mailCheckHandler: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer stmt.Close()
+
+		for _, update := range messagesToUpdate {
+			_, err := stmt.Exec(update.NewMessage, update.ID)
+			if err != nil {
+				log.Printf("Failed to update message status for ID %d: %v", update.ID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit transaction in mailCheckHandler: %v", err)
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(messagesToDeliver)
+}
+
+func mailOutHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	senderNick := r.URL.Query().Get("nick")
+	if sessionID == "" || senderNick == "" {
+		http.Error(w, "Session ID and nickname are required", http.StatusBadRequest)
+		return
+	}
+
+	likePattern := fmt.Sprintf("MAIL|%s|%%", senderNick)
+	rows, err := db.Query("SELECT message FROM chat_messages WHERE session_id = ? AND message LIKE ?", sessionID, likePattern)
+	if err != nil {
+		log.Printf("Database query error in mailOutHandler: %v", err)
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var response MailOutResponse
+	for rows.Next() {
+		var message string
+		if err := rows.Scan(&message); err != nil {
+			log.Printf("Failed to scan message row in mailOutHandler: %v", err)
+			continue
+		}
+		response.Total++
+		if strings.HasSuffix(message, "|U") {
+			response.Unread++
+		} else if strings.HasSuffix(message, "|R") {
+			response.Read++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Row iteration error in mailOutHandler: %v", err)
+		http.Error(w, "Row iteration error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func getGeoFromIP(ip string) (string, error) {
+    client := http.Client{Timeout: 5 * time.Second}
+    url := fmt.Sprintf("https://ip-api.com/json/%s", ip)
+    resp, err := client.Get(url)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+
+    var geo GeoInfo
+    if err := json.NewDecoder(resp.Body).Decode(&geo); err != nil {
+        return "", err
+    }
+
+    if geo.Status != "success" {
+        return "Unknown", fmt.Errorf("geo lookup failed for IP %s", ip)
+    }
+
+    return fmt.Sprintf("The %s area", geo.City), nil
+}
+
+func whoisHandler(w http.ResponseWriter, r *http.Request) {
+	nick := r.URL.Query().Get("nick")
+	if nick == "" {
+		http.Error(w, "Nickname is required", http.StatusBadRequest)
+		return
+	}
+
+	var response WhoisResponse
+	var firstArrived time.Time
+	var ipAddress string
+
+	// Get first message timestamp and last known IP address
+	likePattern := fmt.Sprintf("%%|%s|%%", nick)
+	err := db.QueryRow("SELECT created_at, ip_address FROM chat_messages WHERE message LIKE ? ORDER BY created_at ASC LIMIT 1", likePattern).Scan(&firstArrived, &ipAddress)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "No activity found for this user.", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+	response.FirstArrived = firstArrived.Format("Jan 2, 2006")
+
+	// Get message count
+	msgLike := fmt.Sprintf("MSG|%s|%%", nick)
+	artLike := fmt.Sprintf("ART|%s|%%", nick)
+	partLike := fmt.Sprintf("PART|%s|%%", nick)
+	err = db.QueryRow("SELECT COUNT(*) FROM chat_messages WHERE message LIKE ? OR message LIKE ? OR message LIKE ?", msgLike, artLike, partLike).Scan(&response.MessageCount)
+	if err != nil {
+		http.Error(w, "Database error counting messages", http.StatusInternalServerError)
+		return
+	}
+
+	// Get profile
+	profileLike := fmt.Sprintf("PROFILE|%s|%%", nick)
+	var profileMessage string
+	err = db.QueryRow("SELECT message FROM chat_messages WHERE message LIKE ? ORDER BY created_at DESC LIMIT 1", profileLike).Scan(&profileMessage)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error getting profile", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
+		parts := strings.SplitN(profileMessage, "|", 3)
+		if len(parts) >= 3 {
+			response.Profile = parts[2]
+		}
+	}
+
+	// Get location from IP
+	response.Location, err = getGeoFromIP(ipAddress)
+	if err != nil {
+		log.Printf("Geolocation lookup failed for IP %s: %v", ipAddress, err)
+		response.Location = "an undisclosed location" // Graceful fallback
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	log.Printf("========== WebSocket connection attempt from %s with sID: %s ==========", r.RemoteAddr, sessionID)
+
+	if !isSessionValid(sessionID) {
+		log.Printf("❌ REJECTED: Invalid session ID: %s", sessionID)
+		http.Error(w, "Invalid session", http.StatusUnauthorized) // Add this!
+		return
+	}
+
+	log.Printf("✓ Session validated: %s", sessionID)
+
+	ipAddress := r.Header.Get("X-Real-IP")
+	if ipAddress == "" {
+		ipAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if ipAddress == "" {
+		ipAddress = r.RemoteAddr
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("❌ WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	log.Printf("✓ WebSocket upgraded successfully")
+
+	client := &Client{
+		hub:       hub,
+		conn:      conn,
+		send:      make(chan []byte, 256),
+		sessionID: sessionID,
+		IPAddress: ipAddress,
+	}
+
+	log.Printf("✓ Starting writePump and readPump for session %s", sessionID)
+	go client.writePump()
+	go client.readPump()
+}
+
+func storeMessage(sessionID, message, ipAddress string) error {
+	// Ping the database to ensure the connection is alive before executing the query.
+	if err := db.Ping(); err != nil {
+		log.Printf("Database ping failed: %v", err)
+		// Try to re-establish the connection.
+		initDB()
+		if err := db.Ping(); err != nil {
+			log.Printf("Database reconnect failed: %v", err)
+			return err // Return error if reconnect fails
+		}
+	}
+	_, err := db.Exec("INSERT INTO chat_messages(session_id, message, ip_address, created_at) VALUES(?, ?, ?, ?)", sessionID, message, ipAddress, time.Now())
+	if err != nil {
+		log.Printf("Failed to save message: %v", err)
+		return err
+	}
+	return nil
+}
+
+func broadcastAndStore(hub *Hub, sessionID, message, ipAddress string) error {
+	// Broadcast the message to all clients in the session via the hub FIRST.
+	jsonMsg, err := json.Marshal(ChatMessage{
+		SessionID: sessionID,
+		Message:   message,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		hub.broadcast <- BroadcastMessage{SessionID: sessionID, Message: jsonMsg}
+	} else {
+		log.Printf("Failed to marshal broadcast message for hub: %v", err)
+	}
+
+	// Now, store the message in the database and capture any error.
+	dbErr := storeMessage(sessionID, message, ipAddress)
+	if dbErr != nil {
+		log.Printf("Failed to save broadcast message: %v", dbErr)
+	}
+
+	// Return the database error, if there was one.
+	return dbErr
+}
+
+func handleKill9Request(hub *Hub, sessionID string, userName string) {
+	hub.killRequestsMutex.Lock()
+	defer hub.killRequestsMutex.Unlock()
+
+	tracker, exists := hub.killRequests[sessionID]
+
+	if !exists || time.Since(tracker.Timestamp) > 12*time.Minute {
+		hub.killRequests[sessionID] = &KillRequestTracker{
+			Count:     1,
+			Timestamp: time.Now(),
+		}
+		log.Printf("First silent kill request for session %s by user %s. Timer started.", sessionID, userName)
+		// Do not broadcast anything for the first request to keep it discreet.
+		return
+	}
+
+	tracker.Count++
+	log.Printf("Kill request count for session %s is now %d.", sessionID, tracker.Count)
+
+	if tracker.Count >= 2 {
+		log.Printf("Second valid kill request for session %s by %s. Terminating session.", sessionID, userName)
+		delete(hub.killRequests, sessionID)
+
+		// 1. Broadcast "Session canceled" as an anonymous ECHO message.
+		cancelMsg := "ECHO||***Session Canceled***"
+		broadcastAndStore(hub, sessionID, cancelMsg, "server-broadcast")
+
+		time.Sleep(1 * time.Second)
+
+		// 2. Archive and delete the session data within a single transaction.
+		tx, err := db.Begin()
+		if err != nil {
+			log.Printf("CRITICAL: Failed to begin transaction for session deletion %s: %v", sessionID, err)
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		// Step 2a: Copy messages to chat_archives
+		_, err = tx.Exec("INSERT INTO chat_archives SELECT * FROM chat_messages WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to archive messages for session %s: %v", sessionID, err)
+			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		// Step 2b: Delete messages from chat_messages
+		_, err = tx.Exec("DELETE FROM chat_messages WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to delete messages for session %s: %v", sessionID, err)
+			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		// Step 2c: Delete the session itself
+		result, err := tx.Exec("DELETE FROM sessions WHERE session_id = ?", sessionID)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to execute delete for session %s in transaction: %v", sessionID, err)
+			tx.Rollback()
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("CRITICAL: Failed to commit transaction for session deletion %s: %v", sessionID, err)
+			broadcastAndStore(hub, sessionID, "KILL9_DB_ERROR||", "server-error")
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected > 0 {
+			log.Printf("Successfully archived and deleted session %s from database.", sessionID)
+		} else {
+			log.Printf("Session %s was not found in database for deletion.", sessionID)
+		}
+
+		// 3. Broadcast final messages as anonymous ECHO messages.
+		deletedMsg := "ECHO||***SESSION DELETED*** :: Resetting clients."
+		broadcastAndStore(hub, sessionID, deletedMsg, "server-broadcast")
+
+		// 4. Broadcast the special non-visible message to trigger the client-side redirect.
+		redirectMsg := "KILL9_INITIATE_REDIRECT||"
+		redirectJson, err := json.Marshal(ChatMessage{SessionID: sessionID, Message: redirectMsg, Timestamp: time.Now()})
+		if err == nil {
+			hub.broadcastToSession(sessionID, redirectJson)
+		} else {
+			log.Printf("Error marshaling KILL9_INITIATE_REDIRECT message: %v", err)
+		}
+	}
+}
+
+func (h *Hub) broadcastToSession(sessionID string, message []byte) {
+	h.sessionsMutex.Lock()
+	defer h.sessionsMutex.Unlock()
+
+	if session, ok := h.sessions[sessionID]; ok {
+		for _, client := range session {
+			select {
+			case client.send <- message:
+			default:
+				close(client.send)
+				delete(session, client.connKey)
+			}
+		}
+	}
+}
+
+func sessionCheckHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	isValid := isSessionReal(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"valid": isValid})
+}
+
+func wasDeletedHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sID")
+	wasReal := wasSessionEverReal(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"was_real": wasReal})
+}
+
+// --- Utility & Cleanup Functions ---
+
+func wasSessionEverReal(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	var id int
+	// Check if the session_id ever existed in chat_archives.
+	err := db.QueryRow("SELECT id FROM chat_archives WHERE session_id = ? LIMIT 1", sessionID).Scan(&id)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("Error checking past session existence for session %s: %v", sessionID, err)
+		}
+		return false
+	}
+	return true
+}
+
+func isSessionReal(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	var id int
+	err := db.QueryRow("SELECT id FROM sessions WHERE session_id = ?", sessionID).Scan(&id)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("Error checking session existence for session %s: %v", sessionID, err)
+		}
+		return false
+	}
+	return true
+}
+
+func isSessionValid(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	stmt, err := db.Prepare("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+	if err != nil {
+		log.Printf("Error preparing session validation statement: %v", err)
+		return false
+	}
+	defer stmt.Close()
+
+	result, err := stmt.Exec(time.Now(), sessionID)
+	if err != nil {
+		log.Printf("Error executing session validation for session %s: %v", sessionID, err)
+		return false
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("Error getting rows affected for session validation on session %s: %v", sessionID, err)
+		return false
+	}
+
+	return rowsAffected > 0
+}
+
+func hashName(name string) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(name))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func generateSecureToken(length int) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func deleteAuthTokenByID(id int) {
+	_, err := db.Exec("DELETE FROM auth_tokens WHERE id = ?", id)
+	if err != nil {
+		log.Printf("Failed to delete auth token with id %d: %v", id, err)
+	}
+}
+
+func startCleanupRoutines() {
+	log.Println("Starting cleanup routines...")
+	// Cleanup expired tokens every 15 minutes
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupExpiredTokens()
+		}
+	}()
+
+	// Cleanup inactive sessions every day
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupInactiveSessions()
+		}
+	}()
+
+	// Cleanup old chat messages every day
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupOldChatMessages()
+		}
+	}()
+}
+
+func cleanupExpiredTokens() {
+	ninetyMinutesAgo := time.Now().Add(-90 * time.Minute)
+	result, err := db.Exec("DELETE FROM auth_tokens WHERE created_at < ?", ninetyMinutesAgo)
+	if err != nil {
+		log.Printf("Error cleaning up expired tokens: %v", err)
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected > 0 {
+		log.Printf("Cleaned up %d expired auth tokens", rowsAffected)
+	}
+}
+
+func cleanupInactiveSessions() {
+	fourteenDaysAgo := time.Now().Add(-14 * 24 * time.Hour)
+	result, err := db.Exec("DELETE FROM sessions WHERE last_seen_at < ?", fourteenDaysAgo)
+	if err != nil {
+		log.Printf("Error cleaning up inactive sessions: %v", err)
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected > 0 {
+		log.Printf("Cleaned up %d inactive sessions", rowsAffected)
+	}
+}
+
+func cleanupOldChatMessages() {
+	twoMonthsAgo := time.Now().Add(-2 * 30 * 24 * time.Hour) // Approximation
+	result, err := db.Exec("DELETE FROM chat_messages WHERE created_at < ?", twoMonthsAgo)
+	if err != nil {
+		log.Printf("Error cleaning up old chat messages: %v", err)
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected > 0 {
+		log.Printf("Cleaned up %d old chat messages", rowsAffected)
+	}
+}

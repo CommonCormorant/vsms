@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Scout & Tanks — Classic</title>
+  <link rel="icon" type="image/png" sizes="16x16" href="https://www.gameship.online/info/favicon-16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="https://www.gameship.online/info/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="https://www.gameship.online/info/favicon-48.png">
+  <link rel="shortcut icon" href="https://www.gameship.online/info/favicon.ico">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="overlay" class="overlay">
+    <div class="overlay-inner">
+      <h2>New Game</h2>
+      <p>Choose game mode</p>
+      <div class="overlay-buttons">
+        <button id="overlay-pvp">Two Players (Pass the phone)</button>
+        <button id="overlay-ai">Play vs Assem (AI)</button>
+      </div>
+      <div id="reshuffle-note" class="muted"></div>
+    </div>
+  </div>
+
+  <div id="app">
+    <header>
+      <h1>Scout &amp; Tanks</h1>
+      <div id="legend">
+        <span class="token-swatch red-scout"></span> = Red Scout &nbsp;&nbsp;
+        <span class="token-swatch black-scout"></span> = Black Scout &nbsp;&nbsp;
+        <span class="token-swatch red-tank"></span> = Red Tank &nbsp;&nbsp;
+        <span class="token-swatch black-tank"></span> = Black Tank &nbsp;&nbsp;
+        <span class="token-swatch barrier"></span> = Barrier (J/Q/K)
+      </div>
+    </header>
+
+    <section id="controls">
+      <div id="status">
+        <div id="turn-indicator">Turn: <span id="turn-name">—</span></div>
+        <div id="counters">
+          <div id="red-info"></div>
+          <div id="black-info"></div>
+        </div>
+        <div id="message" aria-live="polite"></div>
+      </div>
+
+      <div id="buttons">
+        <button id="pass-btn" class="small">Hold / Pass Turn</button>
+        <button id="confirm-btn" class="small hidden">Confirm</button>
+        <button id="cancel-btn" class="small hidden">Cancel</button>
+        <button id="new-game" class="small">New Game</button>
+      </div>
+    </section>
+
+    <main>
+      <div id="board" aria-label="game board"></div>
+    </main>
+
+    <aside id="log-area">
+      <div id="log-title">Event Log</div>
+      <div id="log" role="log" aria-live="polite"></div>
+    </aside>
+
+    <footer>
+      <small>Rules: Scouts — 2 cardinal or 1 diagonal. Tanks — 1 cardinal or fire up to 4 cells (stops at barrier/unit). Face cards are barriers. Win by disabling both enemy tanks and removing their scout.</small>
+    </footer>
+  </div>
+
+  <script src="board.js"></script>
+  <script src="assem.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
