@@ -110,7 +110,7 @@ var upgrader = websocket.Upgrader{
 		if err != nil {
 			return false
 		}
-		return u.Scheme == "https" && (u.Hostname() == "gameship.online" || strings.HasSuffix(u.Hostname(), ".gameship.online"))
+		return u.Scheme == "https" && (u.Hostname() == "gameship.online" || strings.HasSuffix(u.Hostname(), ".gameship.online") || u.Hostname() == "gameshiponline.com" || strings.HasSuffix(u.Hostname(), ".gameshiponline.com"))
 	},
 }
 

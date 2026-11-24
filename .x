@@ -1,0 +1,2 @@
+.git/
+server/vsms-d

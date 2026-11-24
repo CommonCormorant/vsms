@@ -32,8 +32,8 @@ requestBtn.addEventListener('click', async () => {
         const data = await response.json();
         const token = data.token;
 
-        generatedLink = `https://vsms.gameship.online/auth2/?token=${token}`;
-
+        generatedLink = `${window.location.origin}/auth2/?token=${token}`;
+        
         tokenDisplay.textContent = generatedLink;
         linkSection.classList.add('active');
         copyBtn.disabled = false;

@@ -1063,7 +1063,7 @@ function startKillCountdown() {
             addMessageToChat('***SESSION DELETED*** :: Resetting clients.', 'system-message');
             clearSessionData();
             setTimeout(() => {
-                window.location.href = 'https://vsms.gameship.online/';
+                window.location.href = `${window.location.origin}/auth/`;
             }, 2000);
         }
     }, 5000);

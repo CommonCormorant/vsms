@@ -149,7 +149,7 @@ async function initializeSession(userName) {
 
     if (!sID) {
         console.log('No session ID found. Redirecting to auth.');
-        window.location.href = 'https://vsms.gameship.online/auth/';
+        window.location.href = `${window.location.origin}/auth/`;
         throw new Error('Redirecting to auth...');
     }
 
