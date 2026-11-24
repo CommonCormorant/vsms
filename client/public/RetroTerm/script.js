@@ -823,6 +823,14 @@ async function handlePeerAccept(recipient) {
             serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|ice|${payload}`);
         }
     };
+    // Diagnostic: show the ICE connection state while connecting. Only
+    // while this transfer is still offered and the channel is not open
+    // yet, so this never clobbers the send progress or the "sent" line.
+    pc.oniceconnectionstatechange = () => {
+        if (peerState.outgoing[key] === out && out.status === 'offered' && dc.readyState !== 'open') {
+            updatePeerStatus(out, `Connecting to ${recipient}… (ICE: ${pc.iceConnectionState})`);
+        }
+    };
     dc.onopen = () => { sendPeerFileChunks(out, key); };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -844,6 +852,15 @@ async function handlePeerOffer(sender, payload) {
     }
     const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
     entry.pc = pc;
+    // Diagnostic: show the ICE connection state while connecting. Only
+    // while this entry is still live and offered and the channel is not
+    // open yet, so this never clobbers the receive progress.
+    pc.oniceconnectionstatechange = () => {
+        if (peerState.incoming[key] === entry && entry.status === 'offered' && (!entry.dc || entry.dc.readyState !== 'open')) {
+            const timerSpan = entry.promptEl.querySelector('.peer-timer');
+            if (timerSpan) timerSpan.textContent = `(connecting… ICE: ${pc.iceConnectionState})`;
+        }
+    };
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             const icePayload = b64urlEncode(JSON.stringify(event.candidate.toJSON()));
@@ -976,7 +993,7 @@ function sendPeerFileChunks(out, key) {
             if (dc.readyState !== 'open') return;
             dc.send(buf);
             offset += buf.byteLength;
-            updatePeerStatus(out, `Sending image to ${out.recipient}… ${Math.round(offset / file.size * 100)}%`);
+            updatePeerStatus(out, `Sending image to ${out.recipient}… ${Math.round(offset / file.size * 100)}% (${formatFileSize(offset)} of ${formatFileSize(file.size)})`);
             sendNext();
         }).catch((e) => {
             console.error('Peer file slice failed:', e);
@@ -1011,6 +1028,14 @@ function onPeerFileData(entry, data) {
     }
     entry.chunks.push(data);
     entry.receivedSize += (typeof data.byteLength === 'number' ? data.byteLength : (data.size || 0));
+    // scp-style progress on the receiver's prompt status line. Text only —
+    // do not touch the buttons or the entry state.
+    const total = entry.meta && entry.meta.size ? entry.meta.size : 0;
+    if (total > 0) {
+        const pct = Math.round(entry.receivedSize / total * 100);
+        const timerSpan = entry.promptEl.querySelector('.peer-timer');
+        if (timerSpan) timerSpan.textContent = `Receiving image from ${entry.sender}… ${pct}% (${formatFileSize(entry.receivedSize)} of ${formatFileSize(total)})`;
+    }
 }
 
 function finishPeerFile(entry) {
@@ -1937,4 +1962,5 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
