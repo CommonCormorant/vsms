@@ -206,7 +206,7 @@ func (h *Hub) run() {
 						Message:   "JOIN|" + client.Nickname,
 						Timestamp: time.Now(),
 					})
-					h.broadcast <- BroadcastMessage{SessionID: client.sessionID, Message: joinMsg}
+					h.broadcastToSession(client.sessionID, joinMsg)
 				}
 			}
 			h.departureTimersMutex.Unlock()
