@@ -221,6 +221,7 @@ function addMessageToChat(htmlContent, className = '', addToHistory = false, moo
             state.messageHistory.shift();
         }
     }
+    return p;
 }
 
 function isRetroTheme() {
@@ -548,6 +549,542 @@ function handleImCommand(recipient, message) {
     addMessageToChat(messageHtml, 'private-message', true);
 }
 
+// ---- Peer-to-peer image sending (/send) ----
+// Text never goes peer. Only images (later: voice, video).
+// The server only relays PEER signaling; the file itself travels over a
+// WebRTC data channel directly between the two browsers.
+
+const PEER_CHUNK_SIZE = 16384; // 16 KB per data-channel message
+const PEER_ACCEPT_TIMEOUT_MS = 80000; // 80 seconds to accept
+
+const peerState = {
+    outgoing: {}, // keyed by recipient nickname (lowercase)
+    incoming: {}, // keyed by sender nickname (lowercase)
+    fileInput: null,
+    pendingRecipient: null
+};
+
+// Base64url (no padding). Payloads are encoded so they never contain '|',
+// which would break the pipe-delimited PEER message on the wire.
+function b64urlEncode(str) {
+    return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlDecode(b64url) {
+    let b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    return decodeURIComponent(escape(atob(b64)));
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function closePeerConnection(entry) {
+    try { if (entry.dc) entry.dc.close(); } catch (e) {}
+    try { if (entry.pc) entry.pc.close(); } catch (e) {}
+}
+
+function cleanupPeerOutgoing(key) {
+    const out = peerState.outgoing[key];
+    if (!out) return;
+    closePeerConnection(out);
+    delete peerState.outgoing[key];
+}
+
+function cleanupPeerIncoming(key) {
+    const entry = peerState.incoming[key];
+    if (!entry) return;
+    closePeerConnection(entry);
+    delete peerState.incoming[key];
+}
+
+function updatePeerStatus(out, text) {
+    if (out.statusId) {
+        const span = document.getElementById(out.statusId);
+        if (span) span.textContent = text;
+    }
+}
+
+function handleSendCommand(recipient, thing) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to send an image.', 'error-message');
+        return;
+    }
+    const type = (thing || '').trim().toLowerCase();
+    if (type !== 'i' && type !== 'img' && type !== 'image') {
+        addMessageToChat('Usage: /send recipient, image  (only images for now — use i, img or image)', 'system-message');
+        return;
+    }
+    if (!recipient) {
+        addMessageToChat('Usage: /send recipient, image', 'system-message');
+        return;
+    }
+    openPeerFilePicker(recipient);
+}
+
+function openPeerFilePicker(recipient) {
+    if (!peerState.fileInput) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        peerState.fileInput = input;
+        input.addEventListener('change', () => {
+            const file = input.files && input.files[0];
+            const target = peerState.pendingRecipient;
+            input.value = '';
+            peerState.pendingRecipient = null;
+            if (file && target) {
+                startPeerFileRequest(target, file);
+            }
+        });
+    }
+    peerState.pendingRecipient = recipient;
+    peerState.fileInput.click();
+}
+
+function getImageDimensions(file) {
+    return new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve({ width: img.naturalWidth, height: img.naturalHeight });
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve({ width: 0, height: 0 });
+        };
+        img.src = url;
+    });
+}
+
+async function startPeerFileRequest(recipient, file) {
+    const key = recipient.toLowerCase();
+    if (peerState.outgoing[key]) {
+        addMessageToChat(`Already sending an image to ${escapeHtml(recipient)}. Wait for it to finish or cancel it first.`, 'error-message');
+        return;
+    }
+    const out = {
+        file: file,
+        meta: null,
+        recipient: recipient,
+        status: 'waiting',
+        statusId: `peer-send-${Date.now()}`,
+        statusP: null,
+        pc: null,
+        dc: null,
+        pendingIce: []
+    };
+    peerState.outgoing[key] = out;
+    const dims = await getImageDimensions(file);
+    out.meta = {
+        name: file.name,
+        size: file.size,
+        type: file.type || 'image/*',
+        width: dims.width,
+        height: dims.height
+    };
+    const payload = b64urlEncode(JSON.stringify(out.meta));
+    serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|file|${payload}`);
+    const statusP = addMessageToChat(`<span id="${out.statusId}">Waiting for ${escapeHtml(recipient)} to accept your image (${escapeHtml(file.name)}, ${formatFileSize(file.size)})…</span>`, 'system-message');
+    out.statusP = statusP;
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+        cancelBtn.disabled = true;
+        serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|bye|`);
+        updatePeerStatus(out, `Cancelled sending to ${recipient}.`);
+        cleanupPeerOutgoing(key);
+    });
+    statusP.appendChild(document.createTextNode(' '));
+    statusP.appendChild(cancelBtn);
+}
+
+function handlePeerFileRequest(sender, payload) {
+    let meta;
+    try {
+        meta = JSON.parse(b64urlDecode(payload));
+    } catch (e) {
+        console.error('Bad PEER file payload:', e);
+        return;
+    }
+    const key = sender.toLowerCase();
+    if (peerState.incoming[key]) return; // already a pending request from this sender
+    const dims = (meta.width && meta.height) ? ` (${meta.width}×${meta.height})` : '';
+    const info = `${escapeHtml(meta.name)} — ${formatFileSize(meta.size)}${dims}`;
+    const p = document.createElement('p');
+    p.className = 'system-message';
+    p.innerHTML = `<b>${escapeHtml(sender)}</b> wants to send an image: ${info}<br><span class="peer-timer"></span> `;
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'I Accept';
+    const rejectBtn = document.createElement('button');
+    rejectBtn.textContent = 'I Reject';
+    p.appendChild(acceptBtn);
+    p.appendChild(document.createTextNode(' '));
+    p.appendChild(rejectBtn);
+    chatOutput.appendChild(p);
+    scrollToBottom();
+
+    const entry = {
+        meta: meta,
+        sender: sender,
+        status: 'waiting',
+        promptEl: p,
+        acceptBtn: acceptBtn,
+        rejectBtn: rejectBtn,
+        timer: null,
+        pc: null,
+        dc: null,
+        chunks: [],
+        receivedSize: 0,
+        finished: false,
+        pendingIce: []
+    };
+    peerState.incoming[key] = entry;
+
+    let secondsLeft = Math.round(PEER_ACCEPT_TIMEOUT_MS / 1000);
+    const timerSpan = p.querySelector('.peer-timer');
+    const updateTimer = () => { if (timerSpan) timerSpan.textContent = `(${secondsLeft}s to decide)`; };
+    updateTimer();
+    entry.timer = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+            expirePeerRequest(sender);
+        } else {
+            updateTimer();
+        }
+    }, 1000);
+
+    acceptBtn.addEventListener('click', () => { acceptPeerFile(sender); });
+    rejectBtn.addEventListener('click', () => { declinePeerFile(sender); });
+}
+
+function settlePeerPrompt(key, note) {
+    const entry = peerState.incoming[key];
+    if (!entry) return;
+    if (entry.timer) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+    }
+    entry.acceptBtn.disabled = true;
+    entry.rejectBtn.disabled = true;
+    const timerSpan = entry.promptEl.querySelector('.peer-timer');
+    if (timerSpan) timerSpan.textContent = note || '';
+}
+
+function acceptPeerFile(sender) {
+    const key = sender.toLowerCase();
+    const entry = peerState.incoming[key];
+    if (!entry) return;
+    settlePeerPrompt(key, '(accepted — waiting for the image…)');
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|accept|`);
+    entry.status = 'accepted';
+}
+
+function declinePeerFile(sender) {
+    const key = sender.toLowerCase();
+    const entry = peerState.incoming[key];
+    if (!entry) return;
+    settlePeerPrompt(key, '(declined)');
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|decline|`);
+    cleanupPeerIncoming(key);
+}
+
+function expirePeerRequest(sender) {
+    const key = sender.toLowerCase();
+    const entry = peerState.incoming[key];
+    if (!entry) return;
+    settlePeerPrompt(key, '(no answer — expired)');
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|decline|`);
+    cleanupPeerIncoming(key);
+}
+
+async function handlePeerAccept(recipient) {
+    const key = recipient.toLowerCase();
+    const out = peerState.outgoing[key];
+    if (!out || !out.file || !out.meta || out.status !== 'waiting') return;
+    out.status = 'offered';
+    // No STUN server in the config for the first test. If direct P2P fails
+    // behind NAT, change this one line to:
+    //   const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    const pc = new RTCPeerConnection();
+    out.pc = pc;
+    const dc = pc.createDataChannel('file');
+    out.dc = dc;
+    dc.binaryType = 'arraybuffer';
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            const payload = b64urlEncode(JSON.stringify(event.candidate.toJSON()));
+            serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|ice|${payload}`);
+        }
+    };
+    dc.onopen = () => { sendPeerFileChunks(out, key); };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|offer|${b64urlEncode(offer.sdp)}`);
+    updatePeerStatus(out, `Sending image to ${recipient}…`);
+}
+
+async function handlePeerOffer(sender, payload) {
+    const key = sender.toLowerCase();
+    const entry = peerState.incoming[key];
+    if (!entry || entry.status !== 'accepted') return;
+    entry.status = 'offered';
+    let sdp;
+    try {
+        sdp = b64urlDecode(payload);
+    } catch (e) {
+        console.error('Bad PEER offer payload:', e);
+        return;
+    }
+    const pc = new RTCPeerConnection();
+    entry.pc = pc;
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            const icePayload = b64urlEncode(JSON.stringify(event.candidate.toJSON()));
+            serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|ice|${icePayload}`);
+        }
+    };
+    pc.ondatachannel = (event) => {
+        const dc = event.channel;
+        entry.dc = dc;
+        dc.binaryType = 'arraybuffer';
+        dc.onmessage = (msgEvent) => { onPeerFileData(entry, msgEvent.data); };
+        dc.onclose = () => {
+            const e = peerState.incoming[key];
+            if (e && !e.finished) {
+                settlePeerPrompt(key, '(connection closed)');
+                cleanupPeerIncoming(key);
+            }
+        };
+    };
+    try {
+        await pc.setRemoteDescription({ type: 'offer', sdp: sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await flushPeerIce(entry);
+        serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|answer|${b64urlEncode(answer.sdp)}`);
+    } catch (e) {
+        console.error('PEER offer failed:', e);
+        settlePeerPrompt(key, '(connection failed)');
+        cleanupPeerIncoming(key);
+    }
+}
+
+async function handlePeerAnswer(recipient, payload) {
+    const key = recipient.toLowerCase();
+    const out = peerState.outgoing[key];
+    if (!out || !out.pc) return;
+    let sdp;
+    try {
+        sdp = b64urlDecode(payload);
+    } catch (e) {
+        console.error('Bad PEER answer payload:', e);
+        return;
+    }
+    try {
+        await out.pc.setRemoteDescription({ type: 'answer', sdp: sdp });
+        await flushPeerIce(out);
+    } catch (e) {
+        console.error('PEER answer failed:', e);
+    }
+}
+
+async function handlePeerIce(sender, payload) {
+    const key = sender.toLowerCase();
+    const entry = peerState.incoming[key] || peerState.outgoing[key];
+    if (!entry) return;
+    let candidate;
+    try {
+        candidate = JSON.parse(b64urlDecode(payload));
+    } catch (e) {
+        console.error('Bad PEER ice payload:', e);
+        return;
+    }
+    await addPeerIceCandidate(entry, candidate);
+}
+
+async function addPeerIceCandidate(entry, candidate) {
+    if (!entry.pc || !entry.pc.remoteDescription) {
+        // Remote description not set yet (or no connection yet): hold the
+        // candidate until it is, then flushPeerIce adds it.
+        entry.pendingIce.push(candidate);
+        return;
+    }
+    try {
+        await entry.pc.addIceCandidate(candidate);
+    } catch (e) {
+        console.error('addIceCandidate failed:', e);
+    }
+}
+
+async function flushPeerIce(entry) {
+    const queued = entry.pendingIce || [];
+    entry.pendingIce = [];
+    for (const candidate of queued) {
+        try {
+            await entry.pc.addIceCandidate(candidate);
+        } catch (e) {
+            console.error('addIceCandidate failed:', e);
+        }
+    }
+}
+
+function handlePeerDecline(sender) {
+    const key = sender.toLowerCase();
+    const out = peerState.outgoing[key];
+    if (!out) return;
+    updatePeerStatus(out, `${sender} declined your image.`);
+    cleanupPeerOutgoing(key);
+}
+
+function handlePeerBye(sender) {
+    const key = sender.toLowerCase();
+    if (peerState.incoming[key]) {
+        settlePeerPrompt(key, '(ended)');
+        cleanupPeerIncoming(key);
+    }
+    if (peerState.outgoing[key]) {
+        const out = peerState.outgoing[key];
+        updatePeerStatus(out, `Peer connection to ${sender} ended.`);
+        cleanupPeerOutgoing(key);
+    }
+}
+
+function sendPeerFileChunks(out, key) {
+    const file = out.file;
+    let offset = 0;
+    const dc = out.dc;
+    const sendNext = () => {
+        if (dc.readyState !== 'open') return;
+        if (dc.bufferedAmount > 256 * 1024) {
+            setTimeout(sendNext, 50);
+            return;
+        }
+        if (offset >= file.size) {
+            dc.send('DONE');
+            completePeerSend(out, key);
+            return;
+        }
+        const slice = file.slice(offset, offset + PEER_CHUNK_SIZE);
+        slice.arrayBuffer().then((buf) => {
+            if (dc.readyState !== 'open') return;
+            dc.send(buf);
+            offset += buf.byteLength;
+            updatePeerStatus(out, `Sending image to ${out.recipient}… ${Math.round(offset / file.size * 100)}%`);
+            sendNext();
+        }).catch((e) => {
+            console.error('Peer file slice failed:', e);
+            updatePeerStatus(out, `Failed sending image to ${out.recipient}.`);
+            cleanupPeerOutgoing(key);
+        });
+    };
+    sendNext();
+}
+
+function completePeerSend(out, key) {
+    out.status = 'sent';
+    const url = URL.createObjectURL(out.file);
+    if (out.statusP) {
+        renderPeerImage(out.statusP, state.userName, out.meta, url);
+    } else {
+        updatePeerStatus(out, `Image sent to ${out.recipient}.`);
+    }
+    // Give the receiver a beat to process DONE, then close.
+    setTimeout(() => {
+        closePeerConnection(out);
+        if (peerState.outgoing[key] === out) delete peerState.outgoing[key];
+    }, 1000);
+}
+
+function onPeerFileData(entry, data) {
+    if (typeof data === 'string') {
+        if (data === 'DONE') {
+            finishPeerFile(entry);
+        }
+        return;
+    }
+    entry.chunks.push(data);
+    entry.receivedSize += (typeof data.byteLength === 'number' ? data.byteLength : (data.size || 0));
+}
+
+function finishPeerFile(entry) {
+    entry.finished = true;
+    const blob = new Blob(entry.chunks, { type: entry.meta.type || 'image/*' });
+    const url = URL.createObjectURL(blob);
+    renderPeerImage(entry.promptEl, entry.sender, entry.meta, url);
+    const key = entry.sender.toLowerCase();
+    closePeerConnection(entry);
+    delete peerState.incoming[key];
+}
+
+function renderPeerImage(p, senderName, meta, url) {
+    p.innerHTML = '';
+    p.className = 'user-message';
+    const caption = document.createElement('div');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'user-name';
+    nameSpan.textContent = senderName + ':';
+    caption.appendChild(nameSpan);
+    caption.appendChild(document.createTextNode(' '));
+    const fileSpan = document.createElement('span');
+    fileSpan.className = 'message-content';
+    fileSpan.textContent = meta.name;
+    caption.appendChild(fileSpan);
+    caption.appendChild(document.createTextNode(' '));
+    const saveLink = document.createElement('a');
+    saveLink.href = url;
+    saveLink.download = meta.name;
+    saveLink.textContent = 'Save image';
+    saveLink.target = '_blank';
+    caption.appendChild(saveLink);
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = meta.name;
+    img.style.maxWidth = '100%';
+    p.appendChild(caption);
+    p.appendChild(img);
+    scrollToBottom();
+}
+
+function handlePeerMessage(parts) {
+    // parts: PEER|SENDER|RECIPIENT|KIND|PAYLOAD...
+    const sender = parts[1] || '';
+    const kind = parts[3] || '';
+    const payload = parts.slice(4).join('|');
+    switch (kind) {
+        case 'file':
+            handlePeerFileRequest(sender, payload);
+            break;
+        case 'accept':
+            handlePeerAccept(sender);
+            break;
+        case 'decline':
+            handlePeerDecline(sender);
+            break;
+        case 'offer':
+            handlePeerOffer(sender, payload);
+            break;
+        case 'answer':
+            handlePeerAnswer(sender, payload);
+            break;
+        case 'ice':
+            handlePeerIce(sender, payload);
+            break;
+        case 'bye':
+            handlePeerBye(sender);
+            break;
+        default:
+            console.log('Unknown PEER kind:', kind);
+            break;
+    }
+}
+
 async function checkForMail() {
     if (!state.userName || state.userName === 'guest') return;
     try {
@@ -662,6 +1199,7 @@ function showHelp() {
         <br>/alone - Check who is currently in the session.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
+        <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work).
         <br>/message [recipient], [message] - Send mail to a user (@ also works).
         <br>/message [recipient], [message] - Send mail to a user (/msg, /mail, @ also works).
         <br>/mail ? - Check for new mail (@? also works).
@@ -841,6 +1379,20 @@ chatForm.addEventListener('submit', async (e) => {
         return;
     }
 
+    if (input.startsWith('>')) {
+        const content = input.slice(1).trim();
+        const match = content.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+
+        if (match) {
+            const recipient = match[1].trim();
+            const thing = match[2].trim();
+            handleSendCommand(recipient, thing);
+        } else {
+            addMessageToChat('Usage: > recipient, image', 'system-message');
+        }
+        return;
+    }
+
     if (input.startsWith('@')) {
         const content = input.slice(1).trim();
         if (content === '?' || content === '') {
@@ -887,6 +1439,15 @@ chatForm.addEventListener('submit', async (e) => {
                 handleImCommand(recipient, message);
             } else {
                 addMessageToChat('Usage: /im recipient, message', 'system-message');
+            }
+        } else if (command === 'send' || command === 's') {
+            const match = args.match(/^(.+?),(.+)$/s); // Use comma as delimiter
+            if (match) {
+                const recipient = match[1].trim();
+                const thing = match[2].trim();
+                handleSendCommand(recipient, thing);
+            } else {
+                addMessageToChat('Usage: /send recipient, image', 'system-message');
             }
         } else if (['message', 'msg'].includes(command)) {
             if (args.trim() === '?') {
@@ -1183,6 +1744,24 @@ function displayBroadcastMessage(data) {
         } else if (!targetSpan) {
             const originalMessageContent = escapeHtml(parts.slice(2, parts.length - 1).join('|'));
             addMessageToChat(`! Your IM to ${recipient} ("${originalMessageContent}") failed to send.`, 'error-message');
+        }
+        return;
+    }
+
+    if (type === 'PEER') {
+        handlePeerMessage(parts);
+        return;
+    }
+
+    if (type === 'PEER_FAILED') {
+        const peerRecipient = escapeHtml(parts[1]);
+        const peerKind = parts[2] || '';
+        const peerKey = (parts[1] || '').toLowerCase();
+        addMessageToChat(`! Peer ${peerKind} to ${peerRecipient} failed: ${peerRecipient} is not available.`, 'error-message');
+        const out = peerState.outgoing[peerKey];
+        if (out) {
+            updatePeerStatus(out, `Could not reach ${peerRecipient}.`);
+            cleanupPeerOutgoing(peerKey);
         }
         return;
     }

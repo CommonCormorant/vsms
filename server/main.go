@@ -473,6 +473,41 @@ func (c *Client) readPump() {
 				})
 				c.send <- failMsg
 			}
+		case "PEER":
+			if len(msgParts) < 4 {
+				log.Printf("Invalid PEER format received: %s", msgString)
+				continue
+			}
+			recipientNick := msgParts[2]
+			peerKind := msgParts[3]
+			peerPayload := strings.Join(msgParts[4:], "|")
+
+			c.hub.sessionsMutex.Lock()
+			var recipientClient *Client
+			if session, ok := c.hub.sessions[c.sessionID]; ok {
+				for _, client := range session {
+					if strings.EqualFold(client.Nickname, recipientNick) {
+						recipientClient = client
+						break
+					}
+				}
+			}
+			c.hub.sessionsMutex.Unlock()
+
+			if recipientClient != nil {
+				// Relay as-is. Never stored: PEER carries SDP/ICE signaling
+				// and must not go through broadcastAndStore.
+				peerRelayMsg := fmt.Sprintf("PEER|%s|%s|%s|%s", senderNick, recipientNick, peerKind, peerPayload)
+				peerMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: peerRelayMsg, Timestamp: time.Now(),
+				})
+				recipientClient.send <- peerMsg
+			} else {
+				failMsg, _ := json.Marshal(ChatMessage{
+					SessionID: c.sessionID, Message: "PEER_FAILED|" + recipientNick + "|" + peerKind, Timestamp: time.Now(),
+				})
+				c.send <- failMsg
+			}
 		case "KILL9":
 			go handleKill9Request(c.hub, c.sessionID, c.Nickname)
 
@@ -1408,3 +1443,4 @@ func cleanupOldChatMessages() {
 		log.Printf("Cleaned up %d old chat messages", rowsAffected)
 	}
 }
+
