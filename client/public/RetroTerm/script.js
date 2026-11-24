@@ -812,7 +812,7 @@ async function handlePeerAccept(recipient) {
     // No STUN server in the config for the first test. If direct P2P fails
     // behind NAT, change this one line to:
     //   const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
     out.pc = pc;
     const dc = pc.createDataChannel('file');
     out.dc = dc;
@@ -842,7 +842,7 @@ async function handlePeerOffer(sender, payload) {
         console.error('Bad PEER offer payload:', e);
         return;
     }
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
     entry.pc = pc;
     pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -1937,3 +1937,4 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
