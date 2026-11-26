@@ -155,6 +155,11 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 				}
 			}
 		}
+		// "all" is reserved: it means "everyone in the room" in /send,
+		// so it can never be a nickname.
+		if strings.EqualFold(finalNick, "all") {
+			isTaken = true
+		}
 		if isTaken {
 			finalNick = fmt.Sprintf("%s_%d", requestedNick, suffix)
 			suffix++
@@ -1443,4 +1448,5 @@ func cleanupOldChatMessages() {
 		log.Printf("Cleaned up %d old chat messages", rowsAffected)
 	}
 }
+
 

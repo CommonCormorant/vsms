@@ -615,12 +615,19 @@ function handleSendCommand(recipient, thing) {
     }
     const type = (thing || '').trim().toLowerCase();
     if (type !== 'i' && type !== 'img' && type !== 'image') {
-        addMessageToChat('Usage: /send recipient, image  (only images for now — use i, img or image)', 'system-message');
+        addMessageToChat('Usage: /send recipient, image  (recipient or "all" for the room; only images for now — use i, img or image)', 'system-message');
         return;
     }
     if (!recipient) {
-        addMessageToChat('Usage: /send recipient, image', 'system-message');
+        addMessageToChat('Usage: /send recipient, image  (or "all" for the whole room)', 'system-message');
         return;
+    }
+    if (recipient.toLowerCase() === 'all') {
+        const others = state.onlineUsers.filter(u => u.toLowerCase() !== state.userName.toLowerCase());
+        if (others.length === 0) {
+            addMessageToChat('You are alone — nobody else is in the room.', 'system-message');
+            return;
+        }
     }
     openPeerFilePicker(recipient);
 }
@@ -639,7 +646,11 @@ function openPeerFilePicker(recipient) {
             input.value = '';
             peerState.pendingRecipient = null;
             if (file && target) {
-                startPeerFileRequest(target, file);
+                if (target.toLowerCase() === 'all') {
+                    startRoomFileRequest(file);
+                } else {
+                    startPeerFileRequest(target, file);
+                }
             }
         });
     }
@@ -661,6 +672,22 @@ function getImageDimensions(file) {
         };
         img.src = url;
     });
+}
+
+// Room send: one image to every other person in the session, peer to each.
+// Each recipient gets their own accept/decline prompt and their own
+// transfer, exactly like a one-to-one /send — one decline or failure
+// never stops the others.
+async function startRoomFileRequest(file) {
+    const others = state.onlineUsers.filter(u => u.toLowerCase() !== state.userName.toLowerCase());
+    if (others.length === 0) {
+        addMessageToChat('You are alone — nobody else is in the room.', 'system-message');
+        return;
+    }
+    addMessageToChat(`Sending image to the room (${others.length} ${others.length === 1 ? 'person' : 'people'}): ${escapeHtml(file.name)}`, 'system-message');
+    for (const nick of others) {
+        await startPeerFileRequest(nick, file);
+    }
 }
 
 async function startPeerFileRequest(recipient, file) {
@@ -1224,7 +1251,7 @@ function showHelp() {
         <br>/alone - Check who is currently in the session.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
-        <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work).
+        <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
         <br>/message [recipient], [message] - Send mail to a user (@ also works).
         <br>/message [recipient], [message] - Send mail to a user (/msg, /mail, @ also works).
         <br>/mail ? - Check for new mail (@? also works).
@@ -1413,7 +1440,7 @@ chatForm.addEventListener('submit', async (e) => {
             const thing = match[2].trim();
             handleSendCommand(recipient, thing);
         } else {
-            addMessageToChat('Usage: > recipient, image', 'system-message');
+            addMessageToChat('Usage: > recipient, image  (or "all" for the whole room)', 'system-message');
         }
         return;
     }
@@ -1472,7 +1499,7 @@ chatForm.addEventListener('submit', async (e) => {
                 const thing = match[2].trim();
                 handleSendCommand(recipient, thing);
             } else {
-                addMessageToChat('Usage: /send recipient, image', 'system-message');
+                addMessageToChat('Usage: /send recipient, image  (or "all" for the whole room)', 'system-message');
             }
         } else if (['message', 'msg'].includes(command)) {
             if (args.trim() === '?') {
@@ -1962,5 +1989,6 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
