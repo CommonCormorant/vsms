@@ -97,6 +97,7 @@ type model struct {
 	profile      string    // profile bio, for /profile
 	welcomed     bool      // true after the first WELCOME; later ones are silent roster resyncs
 	encLevel     int       // remembered /enc level (0 = plain IMs); /enc 0 turns auto-encryption off
+	nightMode    bool      // black background on (reads in xterm); off is the terminal's own background
 }
 
 type wsMsg struct{ cm chatMessage }
@@ -120,6 +121,10 @@ var (
 	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
 	styleEnc  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green, for decrypted /enc messages
+	// styleNightBg paints the whole screen black when night mode is
+	// on, so the client reads in xterm (white terminal background)
+	// the way it does in Termux. The foreground palette is unchanged.
+	styleNightBg = lipgloss.NewStyle().Background(lipgloss.Color("0"))
 )
 
 func newModel(c *client, sessionID, baseURL, nick string, early, history []chatMessage) model {
@@ -150,6 +155,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		startTime: time.Now(),
 		profile:   loadProfile(),
 		encLevel:  loadEncLevel(),
+		nightMode: loadNightMode(),
 		flags:     make(map[string]string),
 		peer:      newPeerState(),
 	}
@@ -739,7 +745,17 @@ func (m model) View() string {
 		status += " · " + m.errMsg
 	}
 	b.WriteString(styleDim.Render(status))
-	return b.String()
+	out := b.String()
+	// Night mode paints the whole screen black, so the client reads
+	// in xterm (white terminal background) the way it does in
+	// Termux. The style is sized to the terminal so the background
+	// covers the entire area, not just behind the text. The file
+	// picker modal is returned above and keeps its own QuickBASIC
+	// blue, unaffected.
+	if m.nightMode {
+		return styleNightBg.Width(m.width).Height(m.height).Render(out)
+	}
+	return out
 }
 
 // ------------------------------------------------------------------

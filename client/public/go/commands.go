@@ -58,7 +58,8 @@ func isSlashCommand(s string) bool {
 		"/mail", "/me", "/emote", "/em", "/echo", "/whoami", "/alone",
 		"/time", "/history", "/invite", "/i", "/roll", "/flip", "/fortune",
 		"/8ball", "/uptime", "/version", "/about", "/clear", "/home",
-		"/review", "/profile", "/whois", "/flag", "/quit", "/exit":
+		"/review", "/profile", "/whois", "/flag", "/nightmode", "/darkmode",
+		"/quit", "/exit":
 		return true
 	}
 	return false
@@ -337,6 +338,8 @@ func (m *model) handleInput(text string) tea.Cmd {
 		m.cmdWhois(rest)
 	case "/flag":
 		m.cmdFlag(rest)
+	case "/nightmode", "/darkmode":
+		m.cmdNightMode()
 	case "/quit", "/exit":
 		m.quitting = true
 	default:
@@ -372,10 +375,28 @@ func (m *model) cmdHelp() {
 		"/version - show rt version",
 		"/about - about rt",
 		"/clear - clear the chat screen",
+		"/nightmode - Toggle dark/light theme.",
 		"/quit - leave",
 		"Tab moves to the room row, arrows pick a person, Enter opens their menu.",
 	} {
 		m.addLine(styleSys.Render("  " + l))
+	}
+}
+
+func (m *model) cmdNightMode() {
+	// Toggle the black background: on, the whole screen is painted
+	// black so the client reads in xterm (white terminal background)
+	// the way it does in Termux; off, the terminal's own background
+	// shows through, as before. The foreground palette is unchanged
+	// in either mode. The setting is remembered in
+	// ~/retro/nightmode. Same command, alias, and messages as the JS
+	// client's /nightmode.
+	m.nightMode = !m.nightMode
+	saveNightMode(m.nightMode)
+	if m.nightMode {
+		m.addLine(styleSys.Render("Night mode enabled."))
+	} else {
+		m.addLine(styleSys.Render("Night mode disabled."))
 	}
 }
 

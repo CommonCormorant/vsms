@@ -66,6 +66,30 @@ func saveEncLevel(n int) {
 	os.WriteFile(encLevelPath(), []byte(strconv.Itoa(n)+"\n"), 0o644)
 }
 
+// nightModePath is where the remembered night-mode setting lives:
+// "1" means the black background is on, "0" or a missing file means
+// off — the terminal's own background shows through, as before.
+func nightModePath() string { return filepath.Join(homeDir(), "retro", "nightmode") }
+
+func loadNightMode() bool {
+	b, err := os.ReadFile(nightModePath())
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "1"
+}
+
+func saveNightMode(on bool) {
+	if err := os.MkdirAll(filepath.Dir(nightModePath()), 0o755); err != nil {
+		return
+	}
+	v := "0\n"
+	if on {
+		v = "1\n"
+	}
+	os.WriteFile(nightModePath(), []byte(v), 0o644)
+}
+
 func loadNick() string {
 	b, err := os.ReadFile(nickPath())
 	if err != nil {
