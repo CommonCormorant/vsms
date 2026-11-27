@@ -384,15 +384,18 @@ func (m *model) cmdHelp() {
 }
 
 func (m *model) cmdNightMode() {
-	// Toggle the black background: on, the whole screen is painted
-	// black so the client reads in xterm (white terminal background)
-	// the way it does in Termux; off, the terminal's own background
-	// shows through, as before. The foreground palette is unchanged
-	// in either mode. The setting is remembered in
-	// ~/retro/nightmode. Same command, alias, and messages as the JS
-	// client's /nightmode.
+	// Toggle the theme: dark (black background, bright text, the
+	// Termux look) or light (white background, darker text, the
+	// JS client's day mode). The setting is remembered in
+	// ~/retro/nightmode. Same command, alias, and messages as the
+	// JS client's /nightmode. The input styles are re-applied after
+	// the switch — they hold a copy of the style value, so they
+	// would otherwise keep the old theme's color.
 	m.nightMode = !m.nightMode
 	saveNightMode(m.nightMode)
+	applyTheme(m.nightMode)
+	m.input.PromptStyle = styleMsg
+	m.input.TextStyle = styleMsg
 	if m.nightMode {
 		m.addLine(styleSys.Render("Night mode enabled."))
 	} else {
@@ -1056,9 +1059,9 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) tea.Cmd {
 		sender := parts[1]
 		text := strings.Join(parts[2:], "|")
 		if strings.EqualFold(sender, m.myNick) {
-			m.addLine(styleOwn.Render(sender + ": " + text))
+			m.addLine(styleOwn.Render(sender+": ") + renderInline(text, styleOwn))
 		} else {
-			m.addLine(styleMsg.Render(sender + ": " + text))
+			m.addLine(styleMsg.Render(sender+": ") + renderInline(text, styleMsg))
 		}
 	case "EMOTE":
 		if len(parts) < 3 {
@@ -1096,13 +1099,13 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) tea.Cmd {
 			if i := strings.Index(rest, ":"); i > 0 {
 				if level, err := strconv.Atoi(rest[:i]); err == nil {
 					if plain, ok := encDecrypt(rest[i+1:], m.sessionID, level); ok {
-						m.addLine(styleEnc.Render("IM from " + sender + ": " + plain))
+						m.addLine(styleEnc.Render("IM from "+sender+": ") + renderInline(plain, styleEnc))
 						return nil
 					}
 				}
 			}
 		}
-		m.addLine(styleOwn.Render("IM from " + sender + ": " + text))
+		m.addLine(styleOwn.Render("IM from "+sender+": ") + renderInline(text, styleOwn))
 	case "MAIL":
 		// MAIL|SENDER|RECIPIENT|...CONTENT...|ENC_FLAG|READ_STATUS.
 		// Expand it like the JS client ("[Mail from cc]: ?") instead

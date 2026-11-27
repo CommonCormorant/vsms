@@ -21,6 +21,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -97,7 +98,7 @@ type model struct {
 	profile      string    // profile bio, for /profile
 	welcomed     bool      // true after the first WELCOME; later ones are silent roster resyncs
 	encLevel     int       // remembered /enc level (0 = plain IMs); /enc 0 turns auto-encryption off
-	nightMode    bool      // black background on (reads in xterm); off is the terminal's own background
+	nightMode    bool      // true = dark theme (black bg, bright text, the Termux look); false = light theme (white bg, darker text, the JS day mode)
 }
 
 type wsMsg struct{ cm chatMessage }
@@ -112,6 +113,13 @@ const flagFetching = "\x00fetching"
 type flagsMsg struct{ flags map[string]string }
 
 var (
+	// The styles below are the DARK palette (night mode): bright
+	// text on black, the Termux look. applyTheme reassigns them to
+	// the LIGHT palette (darker text on white) when night mode is
+	// off. All renders happen on the Bubble Tea goroutine, so
+	// reassigning these package vars from Update is safe — pion
+	// callbacks never render a style directly (they go through the
+	// peerNotice ECHO path).
 	styleMsg  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // bright green
 	styleOwn  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan
 	styleSys  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
@@ -121,13 +129,169 @@ var (
 	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
 	styleEnc  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green, for decrypted /enc messages
-	// styleNightBg paints the whole screen black when night mode is
-	// on, so the client reads in xterm (white terminal background)
-	// the way it does in Termux. The foreground palette is unchanged.
-	styleNightBg = lipgloss.NewStyle().Background(lipgloss.Color("0"))
+	// styleBg paints the whole screen: black in night mode, white
+	// in day mode, so the client reads the same in any terminal
+	// (Termux and xterm). Set by applyTheme.
+	styleBg = lipgloss.NewStyle().Background(lipgloss.Color("0"))
 )
 
+// applyTheme reassigns the package styles to the dark or light
+// palette. The dark palette is the current bright-on-black set.
+// The light palette is the ANSI equivalent of the JS client's day
+// mode: a white background means every color needs its darker
+// version (green becomes dark green, and so on), matching the JS
+// day /enc green #006400. Called at startup and on every
+// /nightmode toggle; the caller re-applies the input styles after.
+func applyTheme(night bool) {
+	if night {
+		styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // bright green
+		styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan
+		styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
+		styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
+		styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+		styleSel = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14"))
+		styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+		styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+		styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+		styleBg = lipgloss.NewStyle().Background(lipgloss.Color("0"))
+		return
+	}
+	// Light: white background, darker versions of every color.
+	styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))                                        // dark green, JS day /enc #006400
+	styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))                                        // dark cyan
+	styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))                                        // dark yellow
+	styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))                                        // dark red
+	styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))                                       // dark cyan
+	styleSel = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("6"))       // white on dark cyan
+	styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))                                        // unchanged, reads on white
+	styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")) // dark cyan
+	styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))                                        // unchanged, already dark green
+	styleBg = lipgloss.NewStyle().Background(lipgloss.Color("15"))
+}
+
+// Inline Markdown, matching the JS client (script.js renderMarkdown):
+// **bold** → ANSI bold (SGR 1), _under_ → ANSI underline (SGR 4),
+// *italic* → /slashes/ — plain text, no ANSI italic (the user does
+// not want italic). Order is bold, then italic, then underline (the
+// JS order), so **text** is caught by bold before the italic pattern
+// sees it. No code (`text`) handling. The bold/underline styles
+// derive from the active theme's base style (same foreground +
+// Bold/Underline), so they read in both themes. Unmatched markers
+// are left literal — the italic pattern needs at least one
+// non-asterisk character, so a lone ** is never eaten by it.
+var (
+	mdBoldRe   = regexp.MustCompile(`\*\*(.*?)\*\*`)
+	mdItalicRe = regexp.MustCompile(`\*([^*]+)\*`)
+	mdUnderRe  = regexp.MustCompile(`_(.*?)_`)
+)
+
+// renderInline applies the inline Markdown to chat message text.
+// Bold is split out first, globally (JS order), so **text** is
+// caught by bold before the italic pattern sees it. Italic and
+// underline still apply inside a bold span (JS nests them inside
+// <b>), with the bold style as the base. Each segment is rendered
+// exactly once, so ANSI codes never nest (a nested Render would
+// reset the outer color). The sender prefix is rendered separately
+// by the caller and is not passed through here.
+func renderInline(text string, base lipgloss.Style) string {
+	locs := mdBoldRe.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return renderNoBold(text, base)
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		b.WriteString(renderNoBold(text[last:loc[0]], base))
+		b.WriteString(renderNoBold(text[loc[2]:loc[3]], base.Bold(true)))
+		last = loc[1]
+	}
+	b.WriteString(renderNoBold(text[last:], base))
+	return b.String()
+}
+
+// renderNoBold renders a segment with no bold spans: *...* becomes
+// /.../ (plain slashes, no ANSI italic) and _..._ becomes
+// underline. The two can nest inside each other (JS applies italic,
+// then underline), so each span's inner is processed for the other
+// marker. Each piece is rendered once.
+func renderNoBold(text string, base lipgloss.Style) string {
+	var b strings.Builder
+	i := 0
+	for i < len(text) {
+		switch text[i] {
+		case '*':
+			// Italic: *...* → /.../. Content must be 1+ non-*
+			// chars, so a lone ** is never eaten.
+			if j := strings.Index(text[i+1:], "*"); j > 0 {
+				inner := text[i+1 : i+1+j]
+				b.WriteString(base.Render("/"))
+				b.WriteString(renderUnderOnly(inner, base))
+				b.WriteString(base.Render("/"))
+				i += 1 + j + 1
+				continue
+			}
+			b.WriteString(base.Render("*"))
+			i++
+		case '_':
+			if j := strings.Index(text[i+1:], "_"); j >= 0 {
+				inner := text[i+1 : i+1+j]
+				b.WriteString(renderItalicOnly(inner, base.Underline(true)))
+				i += 1 + j + 1
+				continue
+			}
+			b.WriteString(base.Render("_"))
+			i++
+		default:
+			j := strings.IndexAny(text[i:], "*_")
+			var run string
+			if j < 0 {
+				run, i = text[i:], len(text)
+			} else {
+				run, i = text[i:i+j], i+j
+			}
+			b.WriteString(base.Render(run))
+		}
+	}
+	return b.String()
+}
+
+// renderUnderOnly renders _..._ spans as underline; everything else
+// uses base. Used for the inside of an italic span (JS applies
+// underline after italic).
+func renderUnderOnly(text string, base lipgloss.Style) string {
+	under := base.Underline(true)
+	var b strings.Builder
+	last := 0
+	for _, loc := range mdUnderRe.FindAllStringSubmatchIndex(text, -1) {
+		b.WriteString(base.Render(text[last:loc[0]]))
+		b.WriteString(under.Render(text[loc[2]:loc[3]]))
+		last = loc[1]
+	}
+	b.WriteString(base.Render(text[last:]))
+	return b.String()
+}
+
+// renderItalicOnly renders *...* spans as /.../ (plain slashes);
+// everything else uses base. Used for the inside of an underline
+// span (JS applies italic before underline).
+func renderItalicOnly(text string, base lipgloss.Style) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range mdItalicRe.FindAllStringSubmatchIndex(text, -1) {
+		b.WriteString(base.Render(text[last:loc[0]]))
+		b.WriteString(base.Render("/" + text[loc[2]:loc[3]] + "/"))
+		last = loc[1]
+	}
+	b.WriteString(base.Render(text[last:]))
+	return b.String()
+}
+
 func newModel(c *client, sessionID, baseURL, nick string, early, history []chatMessage) model {
+	// Apply the remembered theme first, so the input styles below
+	// (and every line added after) use the right palette.
+	night := loadNightMode()
+	applyTheme(night)
+
 	// Single-line input, like the JS client: it starts on one line
 	// and scrolls left/right as you type past the edge. The input
 	// is NOT where wrapping belongs — the output/chat area is.
@@ -155,7 +319,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		startTime: time.Now(),
 		profile:   loadProfile(),
 		encLevel:  loadEncLevel(),
-		nightMode: loadNightMode(),
+		nightMode: night,
 		flags:     make(map[string]string),
 		peer:      newPeerState(),
 	}
@@ -746,16 +910,13 @@ func (m model) View() string {
 	}
 	b.WriteString(styleDim.Render(status))
 	out := b.String()
-	// Night mode paints the whole screen black, so the client reads
-	// in xterm (white terminal background) the way it does in
-	// Termux. The style is sized to the terminal so the background
+	// Both themes paint their background full-screen, so the client
+	// reads the same in any terminal: black in night mode, white in
+	// day mode. The style is sized to the terminal so the background
 	// covers the entire area, not just behind the text. The file
 	// picker modal is returned above and keeps its own QuickBASIC
 	// blue, unaffected.
-	if m.nightMode {
-		return styleNightBg.Width(m.width).Height(m.height).Render(out)
-	}
-	return out
+	return styleBg.Width(m.width).Height(m.height).Render(out)
 }
 
 // ------------------------------------------------------------------

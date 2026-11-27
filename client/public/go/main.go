@@ -67,16 +67,17 @@ func saveEncLevel(n int) {
 }
 
 // nightModePath is where the remembered night-mode setting lives:
-// "1" means the black background is on, "0" or a missing file means
-// off — the terminal's own background shows through, as before.
+// "1" means the dark theme is on, "0" means off (light theme). A
+// missing file means ON — dark is the default, so Termux stays dark
+// as it is now.
 func nightModePath() string { return filepath.Join(homeDir(), "retro", "nightmode") }
 
 func loadNightMode() bool {
 	b, err := os.ReadFile(nightModePath())
 	if err != nil {
-		return false
+		return true
 	}
-	return strings.TrimSpace(string(b)) == "1"
+	return strings.TrimSpace(string(b)) != "0"
 }
 
 func saveNightMode(on bool) {
