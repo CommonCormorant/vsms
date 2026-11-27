@@ -190,6 +190,27 @@ body {
     font-style: italic;
 }
 
+/* BBS-style connection status box: one <pre>-style block, non-italic
+   monospace with tight line-height so the box-drawing joints connect.
+   Night mode is light blue; day mode is navy. The dark-background
+   retro themes use light blue too, so the box stays readable. */
+#chat-output p.status-box {
+    display: block;
+    white-space: pre;
+    line-height: 1.15;
+    font-style: normal;
+    font-family: var(--font-family-mono);
+    color: navy;
+}
+
+body[data-theme="dark"] #chat-output p.status-box,
+body[data-theme="hercules-orange"] #chat-output p.status-box,
+body[data-theme="hercules-green"] #chat-output p.status-box,
+body[data-theme="retroled"] #chat-output p.status-box,
+body[data-theme="crt"] #chat-output p.status-box {
+    color: lightblue;
+}
+
 .error-message {
     color: var(--error-color);
     font-style: italic;

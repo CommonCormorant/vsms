@@ -37,7 +37,11 @@ let state = {
     profile: '',
     messageHistory: [],
     onlineUsers: [],
-    use24Hour: true
+    use24Hour: true,
+    // Pieces of the BBS-style connection status box, collected as they
+    // arrive (REGISTERED, registration complete, WELCOME) and printed as
+    // one block once all three are in.
+    statusBox: { established: false, knownAs: null, online: null, printed: false }
 };
 
 function saveSettings() {
@@ -222,6 +226,36 @@ function addMessageToChat(htmlContent, className = '', addToHistory = false, moo
         }
     }
     return p;
+}
+
+// BBS-style connection status box: the three status lines ("Real-time
+// connection established.", "You are now known as ...", "Online: ...")
+// as a single <pre>-style block so the box-drawing joints stay connected.
+// The lines arrive at different times, so each arrival records its piece
+// and tryPrintStatusBox() prints the box once all three are in.
+function buildStatusBox() {
+    const box = state.statusBox;
+    const onlineText = box.online.length > 0 ? box.online.join(', ') : 'Just you!';
+    const lines = [
+        'Real-time connection established.',
+        `You are now known as ${box.knownAs}.`,
+        `Online: ${onlineText}`,
+    ];
+    const contentWidth = Math.max(...lines.map(l => l.length));
+    const innerWidth = contentWidth + 2;
+    const title = '═[ RetroTerm ]';
+    const top = '╔' + title + '═'.repeat(Math.max(0, innerWidth - title.length)) + '╗';
+    const sep = '╠' + '═'.repeat(innerWidth) + '╣';
+    const bottom = '╚' + '═'.repeat(innerWidth) + '╝';
+    const rows = lines.map(l => '║ ' + l.padEnd(contentWidth) + ' ║');
+    return [top, rows[0], sep, rows[1], rows[2], bottom].join('\n');
+}
+
+function tryPrintStatusBox() {
+    const box = state.statusBox;
+    if (box.printed || !box.established || !box.knownAs || box.online === null) return;
+    box.printed = true;
+    addMessageToChat(buildStatusBox(), 'system-message status-box');
 }
 
 function isRetroTheme() {
@@ -1736,7 +1770,8 @@ function displayBroadcastMessage(data) {
     if (type === 'WELCOME') {
         state.onlineUsers = parts[1] ? parts[1].split(',') : [];
         const escapedUsers = state.onlineUsers.map(u => escapeHtml(u));
-        addMessageToChat(`Online: ${escapedUsers.length > 0 ? escapedUsers.join(', ') : 'Just you!'}`, 'system-message');
+        state.statusBox.online = escapedUsers;
+        tryPrintStatusBox();
         return;
     }
 
@@ -1974,7 +2009,8 @@ async function initializeApp() {
         const onRegistrationComplete = (finalNickname) => {
             state.userName = finalNickname;
             saveSettings();
-            addMessageToChat(`You are now known as ${escapeHtml(state.userName)}.`, 'system-message');
+            state.statusBox.knownAs = escapeHtml(finalNickname);
+            tryPrintStatusBox();
         };
 
         connectWebSocket(() => state.userName, displayBroadcastMessage, onOpenCallback, onRegistrationComplete);
@@ -1989,6 +2025,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 

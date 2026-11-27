@@ -248,7 +248,12 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
                         const finalNickname = data.payload.nickname;
 
                         console.log(`Registered with Nickname: ${finalNickname}`);
-                        addMessageToChat('Real-time connection established.', 'system-message');
+                        // Status box: the "Real-time connection established."
+                        // line is one of three status lines now collected and
+                        // printed as a single BBS-style box once the WELCOME
+                        // (online list) lands. Reset here so a reconnect
+                        // re-prints the box with fresh values.
+                        state.statusBox = { established: true, knownAs: null, online: null, printed: false };
                         reconnectAttempts = 0;
                         connectionState = 'registered';
 
@@ -308,3 +313,4 @@ function connectWebSocket(getUsername, onMessageCallback, onOpenCallback, onRegi
         }
     };
 }
+
