@@ -22,10 +22,34 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// fortunes and eightBall are the JS client's lists, verbatim.
+var fortunes = []string{
+	"A pleasant surprise is waiting for you.",
+	"Adventure awaits you in the near future.",
+	"Your hard work will soon pay off.",
+	"Good things come to those who wait.",
+	"A friend will bring you unexpected joy.",
+	"Trust your instincts today.",
+	"The answer you seek lies within.",
+	"New opportunities will knock on your door.",
+}
+
+var eightBall = []string{
+	"It is certain.", "Without a doubt.", "Yes definitely.",
+	"You may rely on it.", "As I see it, yes.", "Most likely.",
+	"Outlook good.", "Yes.", "Signs point to yes.",
+	"Reply hazy, try again.", "Ask again later.", "Better not tell you now.",
+	"Cannot predict now.", "Concentrate and ask again.",
+	"Don't count on it.", "My reply is no.", "My sources say no.",
+	"Outlook not so good.", "Very doubtful.",
+}
 
 func (m *model) isGuest() bool {
 	return strings.HasPrefix(m.myNick, "guest")
@@ -103,6 +127,34 @@ func (m *model) handleInput(text string) {
 		m.cmdHistory(rest)
 	case "/invite", "/i":
 		m.addLine(styleSys.Render("Share link: " + m.baseURL + "/rt/?sID=" + m.sessionID))
+	case "/roll":
+		m.cmdRoll(rest)
+	case "/flip":
+		m.cmdFlip()
+	case "/fortune":
+		m.addLine(styleSys.Render("🥠 Fortune: " + fortunes[rand.Intn(len(fortunes))]))
+	case "/8ball":
+		m.addLine(styleSys.Render("🔮 Magic 8-Ball says: " + eightBall[rand.Intn(len(eightBall))]))
+	case "/uptime":
+		up := time.Since(m.startTime)
+		h := int(up.Hours())
+		min := int(up.Minutes()) % 60
+		sec := int(up.Seconds()) % 60
+		m.addLine(styleSys.Render(fmt.Sprintf("Uptime: %dh %dm %ds", h, min, sec)))
+	case "/version":
+		m.addLine(styleSys.Render("rt v1 — RetroTerm terminal client for VSMS"))
+	case "/about":
+		m.addLine(styleSys.Render("rt: a nostalgic terminal chat interface with modern flair."))
+	case "/clear", "/home":
+		m.lines = nil
+		m.viewport.SetContent("")
+		m.addLine(styleSys.Render("Chat cleared."))
+	case "/review":
+		m.cmdReview(rest)
+	case "/profile":
+		m.cmdProfile(rest)
+	case "/whois":
+		m.cmdWhois(rest)
 	case "/quit", "/exit":
 		m.quitting = true
 	default:
@@ -114,17 +166,28 @@ func (m *model) cmdHelp() {
 	m.addLine(styleSys.Render("Available commands:"))
 	for _, l := range []string{
 		"/name [new] - change nickname (empty picks a random one)",
+		"/profile [bio] - set your profile bio (empty to view)",
+		"/whoami - your nickname and session",
+		"/whois [nick] - look up a user's info",
+		"/alone - who is in the room",
+		"/me <action> - emote",
 		"/im <who>, <message> - private message (! also works)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
 		"/message <who>, <message> - send mail (@ also works)",
 		"/mail ? - check for new mail",
-		"/me <action> - emote",
-		"/echo <text> - echo a message",
-		"/whoami - your nickname and session",
-		"/alone - who is in the room",
-		"/history [minutes] - fetch server history (default 15, max 90)",
 		"/invite - shareable link to this room",
+		"/history [minutes] - fetch server history (default 15, max 90)",
+		"/review [count] - show local history (default 12)",
 		"/time - current date and time",
+		"/echo <text> - echo a message",
+		"/roll [sides] - roll a die (default 6 sides)",
+		"/flip - flip a coin",
+		"/8ball - ask the Magic 8-Ball",
+		"/fortune - get a fortune cookie message",
+		"/uptime - show session uptime",
+		"/version - show rt version",
+		"/about - about rt",
+		"/clear - clear the chat screen",
 		"/quit - leave",
 		"Tab moves to the room row, arrows pick a person, Enter opens their menu.",
 	} {
@@ -205,6 +268,140 @@ func (m *model) cmdEmote(rest string) {
 		return
 	}
 	m.sendRaw("EMOTE|" + m.myNick + "|" + rest)
+}
+
+// cmdRoll rolls a die and broadcasts it, the same wire format as the
+// JS client: ROLL|nick|d<sides> <result>.
+func (m *model) cmdRoll(rest string) {
+	sides := 6
+	if strings.TrimSpace(rest) != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
+			sides = n
+		}
+	}
+	if sides < 2 {
+		m.addLine(styleErr.Render("Usage: /roll [sides] — sides must be 2 or more."))
+		return
+	}
+	result := rand.Intn(sides) + 1
+	m.sendRaw(fmt.Sprintf("ROLL|%s|d%d %d", m.myNick, sides, result))
+}
+
+// cmdFlip flips a coin and broadcasts it: FLIP|nick|Heads (or Tails).
+func (m *model) cmdFlip() {
+	outcome := "Tails"
+	if rand.Intn(2) == 0 {
+		outcome = "Heads"
+	}
+	m.sendRaw("FLIP|" + m.myNick + "|" + outcome)
+}
+
+// cmdReview re-prints the last N lines already on screen, the way
+// the JS client's /review re-shows local history.
+func (m *model) cmdReview(rest string) {
+	count := 12
+	if strings.TrimSpace(rest) != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
+			count = n
+		}
+	}
+	if len(m.lines) == 0 {
+		m.addLine(styleSys.Render("No recent messages to review."))
+		return
+	}
+	if count > len(m.lines) {
+		count = len(m.lines)
+	}
+	start := len(m.lines) - count
+	m.addLine(styleSys.Render(fmt.Sprintf("--- Last %d Messages ---", count)))
+	for _, l := range m.lines[start : len(m.lines)-1] {
+		m.addLine(l)
+	}
+	m.addLine(styleSys.Render("--- End of History ---"))
+}
+
+// cmdProfile sets or views the profile bio. It is sent to the server
+// as PROFILE|nick|bio and remembered in ~/retro/profile.
+func (m *model) cmdProfile(rest string) {
+	if m.isGuest() {
+		m.addLine(styleErr.Render(`You must change your /name from "guest" to set a profile.`))
+		return
+	}
+	if strings.TrimSpace(rest) != "" {
+		bio := strings.TrimSpace(rest)
+		m.sendRaw("PROFILE|" + m.myNick + "|" + bio)
+		m.profile = bio
+		saveProfile(bio)
+		m.addLine(styleSys.Render("Profile updated for " + m.myNick + "."))
+		return
+	}
+	if m.profile != "" {
+		m.addLine(styleSys.Render("Your profile: " + m.profile))
+		return
+	}
+	if bio := loadProfile(); bio != "" {
+		m.profile = bio
+		m.addLine(styleSys.Render("Your profile: " + bio))
+		return
+	}
+	m.addLine(styleSys.Render("No profile set. Usage: /profile [your bio]"))
+}
+
+func profilePath() string { return filepath.Join(homeDir(), "retro", "profile") }
+
+func loadProfile() string {
+	b, err := os.ReadFile(profilePath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func saveProfile(bio string) {
+	if err := os.MkdirAll(filepath.Dir(profilePath()), 0o755); err != nil {
+		return
+	}
+	os.WriteFile(profilePath(), []byte(bio+"\n"), 0o644)
+}
+
+// cmdWhois looks a user up via GET /api/whois and prints the result.
+func (m *model) cmdWhois(rest string) {
+	target := strings.TrimSpace(rest)
+	if target == "" {
+		m.addLine(styleErr.Render("Usage: /whois [nickname]"))
+		return
+	}
+	m.addLine(styleSys.Render("Looking up " + target + "..."))
+	go func() {
+		httpClient := &http.Client{Timeout: 10 * time.Second}
+		reqURL := fmt.Sprintf("%s/api/whois?sID=%s&nick=%s", m.baseURL, m.sessionID, target)
+		resp, err := httpClient.Get(reqURL)
+		if err != nil {
+			m.c.errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			m.c.errCh <- err
+			return
+		}
+		var data struct {
+			FirstArrived string `json:"first_arrived"`
+			Location     string `json:"location"`
+			MessageCount int    `json:"message_count"`
+			Profile      string `json:"profile"`
+		}
+		if err := json.Unmarshal(body, &data); err != nil {
+			m.c.recv <- chatMessage{Message: "ECHO|Could not retrieve info for " + target + "."}
+			return
+		}
+		msg := fmt.Sprintf("%s first arrived %s\nFrom %s\n%s has sent %d messages", target, data.FirstArrived, data.Location, target, data.MessageCount)
+		if data.Profile != "" {
+			msg += fmt.Sprintf("\nSays, %s,\n%s", target, data.Profile)
+		}
+		m.c.recv <- chatMessage{Message: "ECHO|" + msg}
+	}()
 }
 
 func (m *model) cmdAlone() {
@@ -324,6 +521,22 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 			return
 		}
 		m.addLine(styleMsg.Render("* " + parts[1] + " " + strings.Join(parts[2:], "|")))
+	case "ROLL":
+		if len(parts) < 3 {
+			return
+		}
+		// ROLL|nick|d6 4 — content is "d<sides> <result>".
+		fields := strings.Fields(strings.Join(parts[2:], "|"))
+		if len(fields) >= 2 {
+			m.addLine(styleMsg.Render(parts[1] + ": 🎲 Rolled a " + fields[0] + ": " + fields[1]))
+		} else {
+			m.addLine(styleMsg.Render(parts[1] + ": 🎲 Rolled a " + strings.Join(parts[2:], "|")))
+		}
+	case "FLIP":
+		if len(parts) < 3 {
+			return
+		}
+		m.addLine(styleMsg.Render(parts[1] + ": 🪙 Coin flip: " + strings.Join(parts[2:], "|")))
 	case "IM":
 		if len(parts) < 4 {
 			return

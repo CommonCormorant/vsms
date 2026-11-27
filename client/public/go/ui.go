@@ -28,6 +28,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 const (
@@ -82,6 +83,8 @@ type model struct {
 	errMsg    string
 	spans     []nameSpan // name click targets from the last render
 	ready     bool
+	startTime time.Time // session start, for /uptime
+	profile   string    // profile bio, for /profile
 }
 
 type wsMsg struct{ cm chatMessage }
@@ -121,6 +124,8 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		focus:     focusInput,
 		rowSel:    0,
 		status:    "connecting…",
+		startTime: time.Now(),
+		profile:   loadProfile(),
 	}
 	m.addLine(styleSys.Render("Real-time connection established."))
 	m.addLine(styleSys.Render("You are now known as " + nick + "."))
@@ -174,10 +179,21 @@ func (m *model) layout() {
 }
 
 // addLine appends a rendered line and keeps the viewport pinned to the
-// bottom unless the user has scrolled up to read.
+// bottom unless the user has scrolled up to read. Each line is wrapped
+// to the viewport width first, so a long message wraps onto the next
+// line instead of running off the edge or overwriting the line start
+// when the screen fills up.
 func (m *model) addLine(s string) {
 	atBottom := m.viewport.AtBottom()
-	m.lines = append(m.lines, s)
+	w := m.viewport.Width
+	if w < 1 {
+		w = 80
+	}
+	// wordwrap is ANSI-aware, so styled lines keep their colour across
+	// the wrap. A line that fits is left untouched.
+	for _, ln := range strings.Split(wordwrap.String(s, w), "\n") {
+		m.lines = append(m.lines, ln)
+	}
 	m.viewport.SetContent(strings.Join(m.lines, "\n"))
 	if atBottom {
 		m.viewport.GotoBottom()
@@ -323,6 +339,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		m.layout()
+		// A resize is also how the phone tells us the keyboard was
+		// shown or hidden. Keep the input focused so the keyboard
+		// comes back instead of being forgotten.
+		if m.focus == focusInput {
+			m.input.Focus()
+		}
 		return m, nil
 
 	case tickMsg:
@@ -394,9 +416,14 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Click anywhere else closes the dropdown.
+	// Click anywhere else closes the dropdown and puts the focus back
+	// on the input, so a tap brings the phone keyboard back instead
+	// of leaving it forgotten after it was minimized.
 	if m.ddOpen {
 		m.closeDropdown()
+	} else {
+		m.focus = focusInput
+		m.input.Focus()
 	}
 	return m, nil
 }
@@ -465,6 +492,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.handleInput(text)
+			if m.quitting {
+				// /quit sets quitting but must also tell bubbletea
+				// to exit, or the program sits in the alt screen
+				// showing nothing and the terminal never comes back.
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 	}
