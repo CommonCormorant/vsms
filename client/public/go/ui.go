@@ -120,15 +120,24 @@ var (
 	// reassigning these package vars from Update is safe — pion
 	// callbacks never render a style directly (they go through the
 	// peerNotice ECHO path).
-	styleMsg  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // bright green
-	styleOwn  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan
-	styleSys  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
-	styleErr  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-	styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	// Every style carries the theme background, not just styleBg:
+	// View wraps the whole screen in styleBg, but each inner
+	// Render ends with a reset (\x1b[0m) that clears the
+	// background, so text would render on the terminal's default
+	// background instead of the painted one. On xterm (white
+	// terminal bg) that made the dark theme's bright text nearly
+	// invisible — the live-row names washed out and the header
+	// looked gone. With the bg on each style, every span
+	// re-asserts it.
+	styleMsg  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Background(lipgloss.Color("0")) // bright green
+	styleOwn  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Background(lipgloss.Color("0")) // cyan
+	styleSys  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Background(lipgloss.Color("0")) // yellow
+	styleErr  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Background(lipgloss.Color("0"))  // red
+	styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Background(lipgloss.Color("0"))
 	styleSel  = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14"))
-	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
-	styleEnc  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green, for decrypted /enc messages
+	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(lipgloss.Color("0"))
+	styleBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14")).Background(lipgloss.Color("0"))
+	styleEnc  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Background(lipgloss.Color("0")) // green, for decrypted /enc messages
 	// styleBg paints the whole screen: black in night mode, white
 	// in day mode, so the client reads the same in any terminal
 	// (Termux and xterm). Set by applyTheme.
@@ -143,29 +152,33 @@ var (
 // day /enc green #006400. Called at startup and on every
 // /nightmode toggle; the caller re-applies the input styles after.
 func applyTheme(night bool) {
+	// Every style carries the theme background (see the var block
+	// above): the outer styleBg wrap alone does not survive the
+	// inner Renders' resets. styleSel keeps its own highlight
+	// background in both themes.
 	if night {
-		styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // bright green
-		styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan
-		styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
-		styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-		styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+		styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Background(lipgloss.Color("0")) // bright green
+		styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Background(lipgloss.Color("0")) // cyan
+		styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Background(lipgloss.Color("0")) // yellow
+		styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Background(lipgloss.Color("0"))  // red
+		styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Background(lipgloss.Color("0"))
 		styleSel = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14"))
-		styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-		styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
-		styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+		styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(lipgloss.Color("0"))
+		styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14")).Background(lipgloss.Color("0"))
+		styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Background(lipgloss.Color("0"))
 		styleBg = lipgloss.NewStyle().Background(lipgloss.Color("0"))
 		return
 	}
 	// Light: white background, darker versions of every color.
-	styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))                                        // dark green, JS day /enc #006400
-	styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))                                        // dark cyan
-	styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))                                        // dark yellow
-	styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))                                        // dark red
-	styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))                                       // dark cyan
-	styleSel = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("6"))       // white on dark cyan
-	styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))                                        // unchanged, reads on white
-	styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")) // dark cyan
-	styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))                                        // unchanged, already dark green
+	styleMsg = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Background(lipgloss.Color("15"))                                        // dark green, JS day /enc #006400
+	styleOwn = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Background(lipgloss.Color("15"))                                        // dark cyan
+	styleSys = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Background(lipgloss.Color("15"))                                        // dark yellow
+	styleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Background(lipgloss.Color("15"))                                        // dark red
+	styleName = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Background(lipgloss.Color("15"))                                       // dark cyan
+	styleSel = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("6"))                                        // white on dark cyan
+	styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(lipgloss.Color("15"))                                        // unchanged, reads on white
+	styleBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Background(lipgloss.Color("15")) // dark cyan
+	styleEnc = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Background(lipgloss.Color("15"))                                        // unchanged, already dark green
 	styleBg = lipgloss.NewStyle().Background(lipgloss.Color("15"))
 }
 
@@ -302,6 +315,10 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 	ti.Focus()
 	ti.PromptStyle = styleMsg
 	ti.TextStyle = styleMsg
+	// The placeholder needs a theme style too, or it renders in
+	// the terminal default colors in an unpainted gap (invisible
+	// on xterm's white in the dark theme, like the live row was).
+	ti.PlaceholderStyle = styleDim
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -559,7 +576,13 @@ func (m *model) renderLiveRow() string {
 		} else {
 			b.WriteString(styleName.Render(name))
 			b.WriteString(" ")
-			b.WriteString(flag)
+			// The flag is styled, not raw: a raw flag sits in an
+			// unpainted gap (terminal default fg/bg) between the
+			// styled name spans. styleName gives it the theme
+			// background and a visible foreground — the black
+			// circle needs a light fg on black, a dark fg on
+			// white — and color emoji ignore the fg anyway.
+			b.WriteString(styleName.Render(flag))
 		}
 		x = x1 + 1
 		if i < len(others)-1 {

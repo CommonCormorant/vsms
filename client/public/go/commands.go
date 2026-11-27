@@ -396,6 +396,7 @@ func (m *model) cmdNightMode() {
 	applyTheme(m.nightMode)
 	m.input.PromptStyle = styleMsg
 	m.input.TextStyle = styleMsg
+	m.input.PlaceholderStyle = styleDim
 	if m.nightMode {
 		m.addLine(styleSys.Render("Night mode enabled."))
 	} else {

@@ -352,12 +352,22 @@ func (m *model) peerDataMessage(entry *peerIncoming, key string, msg webrtc.Data
 }
 
 // peerFinish saves the received bytes to ~/retro/imgs/<name> and
-// prints where it landed. The entry is dropped first, so a new
-// transfer from the same sender can start. The image itself is never
+// prints where it landed. The save is driven by the entry itself,
+// not by the entry still being in the map: the data channel's
+// OnClose (peerCleanup) runs on a different pion goroutine from
+// OnMessage, and the sender closes ~1s after DONE, so OnClose can
+// win the race and drop the entry before DONE is processed. The
+// old code gated the save on the map lookup, so when OnClose won
+// the file was silently lost — no save, no notice, no error. The
+// accepted flag is the guard instead: only a transfer the user
+// said yes to can save (an offer for a non-accepted entry is
+// ignored in peerOffer, so DONE can only arrive for an accepted
+// one). entry.done, set under the lock, is the idempotency guard,
+// so a duplicate DONE never saves twice. The image itself is never
 // displayed in the TUI.
 func (m *model) peerFinish(entry *peerIncoming, key string) {
 	m.peer.mu.Lock()
-	if cur, ok := m.peer.in[key]; !ok || cur != entry || entry.done {
+	if entry.done || !entry.accepted {
 		m.peer.mu.Unlock()
 		return
 	}
@@ -365,10 +375,23 @@ func (m *model) peerFinish(entry *peerIncoming, key string) {
 	data := append([]byte(nil), entry.buf.Bytes()...)
 	meta := entry.meta
 	sender := entry.sender
-	delete(m.peer.in, key)
 	pc := entry.pc
+	// Best-effort map removal: the entry may already have been
+	// dropped by peerCleanup (OnClose racing DONE). That must not
+	// lose the file — the snapshot above is authoritative.
+	if cur, ok := m.peer.in[key]; ok && cur == entry {
+		delete(m.peer.in, key)
+	}
 	m.peer.mu.Unlock()
+	m.peerSaveFile(data, meta, sender, pc)
+}
 
+// peerSaveFile writes data to ~/retro/imgs/<name> and prints the
+// result. It takes a snapshot (data, meta, sender, pc) so it never
+// touches the peer maps — the caller snapshots under peerState.mu
+// first. A failure prints a peerNotice error; success prints where
+// the image landed.
+func (m *model) peerSaveFile(data []byte, meta peerFileMeta, sender string, pc *webrtc.PeerConnection) {
 	name := filepath.Base(meta.Name)
 	if name == "" || name == "." || name == "/" {
 		name = fmt.Sprintf("image-%d", time.Now().Unix())
@@ -414,14 +437,35 @@ func (m *model) peerNotice(text string) {
 // peerCleanup closes the peer connection (if any) and drops the
 // incoming entry, but only if the entry in the map is still this
 // one — a newer transfer from the same sender must not be clobbered.
+// If the whole file already arrived (buffer length == meta size)
+// but DONE never landed — the channel closed before a queued DONE
+// was dispatched, so peerFinish never ran — the file is complete,
+// so save it instead of dropping it. That is the other half of
+// the OnClose/DONE race: OnClose winning must not lose a finished
+// transfer, whether DONE was processed first or never arrived.
+// An incomplete transfer (buffer short of meta size, or a zero
+// size) is still dropped with no save, as before.
 func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	var pc *webrtc.PeerConnection
+	var save []byte
+	var meta peerFileMeta
+	var sender string
 	m.peer.mu.Lock()
 	if cur, ok := m.peer.in[key]; ok && cur == entry {
 		delete(m.peer.in, key)
 		pc = entry.pc
+		if !entry.done && entry.accepted && entry.meta.Size > 0 && entry.buf.Len() == int(entry.meta.Size) {
+			entry.done = true
+			save = append([]byte(nil), entry.buf.Bytes()...)
+			meta = entry.meta
+			sender = entry.sender
+		}
 	}
 	m.peer.mu.Unlock()
+	if save != nil {
+		m.peerSaveFile(save, meta, sender, pc)
+		return
+	}
 	if pc != nil {
 		pc.Close()
 	}
