@@ -514,6 +514,28 @@ func (c *Client) readPump() {
 			messageContent := msgParts[3]
 			messageId := msgParts[4]
 
+			// "all" is the whole room: broadcast to every client in
+			// this session except the sender (who already sees their
+			// own message locally). This covers both /im all and
+			// /enc all, since an encrypted IM is just an IM whose
+			// text carries the ENC: marker.
+			if strings.EqualFold(recipientNick, "all") {
+				c.hub.sessionsMutex.Lock()
+				if session, ok := c.hub.sessions[c.sessionID]; ok {
+					for _, client := range session {
+						if client == c {
+							continue
+						}
+						imRelayMsg := fmt.Sprintf("IM|%s|%s|%s", senderNick, recipientNick, messageContent)
+						imMsg, _ := json.Marshal(ChatMessage{
+							SessionID: c.sessionID, Message: imRelayMsg, Timestamp: time.Now(),
+						})
+						client.send <- imMsg
+					}
+				}
+				c.hub.sessionsMutex.Unlock()
+				continue
+			}
 
 			c.hub.sessionsMutex.Lock()
 			var recipientClient *Client
