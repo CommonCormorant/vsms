@@ -507,6 +507,29 @@ function isFlag(emoji) {
     return false;
 }
 
+// showWhois fetches the server-side whois for targetName and prints
+// it (first arrived, location, message count, profile, flag). Used
+// by /whois and by /profile with no arguments (own whois).
+function showWhois(targetName) {
+    serverApi.getWhois(targetName)
+        .then(data => {
+            let whoisMessage = `${escapeHtml(targetName)} first arrived ${data.first_arrived}<br>`;
+            whoisMessage += `From ${escapeHtml(data.location)}<br>`;
+            whoisMessage += `${escapeHtml(targetName)} has sent ${data.message_count} messages<br>`;
+            if (data.flag) {
+                const flagLabel = isFlag(data.flag) ? 'Declared nationality' : 'Displays as';
+                whoisMessage += `${flagLabel}: ${escapeHtml(data.flag)}<br>`;
+            }
+            if (data.profile) {
+                whoisMessage += `Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
+            }
+            addMessageToChat(whoisMessage, 'system-message');
+        })
+        .catch(error => {
+            addMessageToChat(`Could not retrieve info for ${escapeHtml(targetName)}. ${error.message}`, 'error-message');
+        });
+}
+
 function handleLocalCommand(input) {
     const parts = input.slice(1).trim().split(' ');
     const command = parts[0].toLowerCase();
@@ -593,21 +616,19 @@ function handleLocalCommand(input) {
             addMessageToChat(`You are ${escapeHtml(state.userName)}.`, 'system-message');
             break;
         case 'profile':
+            if (!args.trim()) {
+                showWhois(state.userName);
+                break;
+            }
             if (state.userName.startsWith('guest')) {
                 addMessageToChat('You must change your /name from "guest" to set a profile.', 'error-message');
                 return;
             }
-            if (args) {
-                const profileMessage = `PROFILE|${state.userName}|${args}`;
-                serverApi.sendWsMessage(profileMessage);
-                state.profile = args;
-                saveSettings();
-                addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
-            } else if (state.profile) {
-                addMessageToChat(`Your profile: ${escapeHtml(state.profile)}`, 'system-message');
-            } else {
-                addMessageToChat('No profile set. Usage: /profile [your bio]', 'system-message');
-            }
+            const profileMessage = `PROFILE|${state.userName}|${args}`;
+            serverApi.sendWsMessage(profileMessage);
+            state.profile = args;
+            saveSettings();
+            addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
             break;
         case 'flag':
             if (state.userName.startsWith('guest')) {
@@ -624,24 +645,7 @@ function handleLocalCommand(input) {
             break;
         case 'whois':
             if (args) {
-                const targetName = args.trim();
-                serverApi.getWhois(targetName)
-                    .then(data => {
-                        let whoisMessage = `${escapeHtml(targetName)} first arrived ${data.first_arrived}<br>`;
-                        whoisMessage += `From ${escapeHtml(data.location)}<br>`;
-                        whoisMessage += `${escapeHtml(targetName)} has sent ${data.message_count} messages<br>`;
-                        if (data.flag) {
-                            const flagLabel = isFlag(data.flag) ? 'Declared nationality' : 'Displays as';
-                            whoisMessage += `${flagLabel}: ${escapeHtml(data.flag)}<br>`;
-                        }
-                        if (data.profile) {
-                            whoisMessage += `Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
-                        }
-                        addMessageToChat(whoisMessage, 'system-message');
-                    })
-                    .catch(error => {
-                        addMessageToChat(`Could not retrieve info for ${escapeHtml(targetName)}. ${error.message}`, 'error-message');
-                    });
+                showWhois(args.trim());
             } else {
                 addMessageToChat('Usage: /whois [nickname]', 'system-message');
             }
@@ -2482,6 +2486,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 

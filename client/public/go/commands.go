@@ -701,31 +701,25 @@ func (m *model) cmdReview(rest string) {
 	m.addLine(styleSys.Render("--- End of History ---"))
 }
 
-// cmdProfile sets or views the profile bio. It is sent to the server
-// as PROFILE|nick|bio and remembered in ~/retro/profile.
+// cmdProfile sets the profile bio, or with no arguments shows the
+// user's own server-side whois (first arrived, location, message
+// count, profile, flag) — the same as /whois <own-nick>. The local
+// copy can be stale, so the read path asks the server instead of
+// showing the stored bio.
 func (m *model) cmdProfile(rest string) {
+	if strings.TrimSpace(rest) == "" {
+		m.cmdWhois(m.myNick)
+		return
+	}
 	if m.isGuest() {
-		m.addLine(styleErr.Render(`You must change your /name from "guest" to set a profile.`))
+		m.addLine(styleErr.Render(`You must change your /name from \"guest\" to set a profile.`))
 		return
 	}
-	if strings.TrimSpace(rest) != "" {
-		bio := strings.TrimSpace(rest)
-		m.sendRaw("PROFILE|" + m.myNick + "|" + bio)
-		m.profile = bio
-		saveProfile(bio)
-		m.addLine(styleSys.Render("Profile updated for " + m.myNick + "."))
-		return
-	}
-	if m.profile != "" {
-		m.addLine(styleSys.Render("Your profile: " + m.profile))
-		return
-	}
-	if bio := loadProfile(); bio != "" {
-		m.profile = bio
-		m.addLine(styleSys.Render("Your profile: " + bio))
-		return
-	}
-	m.addLine(styleSys.Render("No profile set. Usage: /profile [your bio]"))
+	bio := strings.TrimSpace(rest)
+	m.sendRaw("PROFILE|" + m.myNick + "|" + bio)
+	m.profile = bio
+	saveProfile(bio)
+	m.addLine(styleSys.Render("Profile updated for " + m.myNick + "."))
 }
 
 func profilePath() string { return filepath.Join(homeDir(), "retro", "profile") }
