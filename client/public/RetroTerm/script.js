@@ -1776,7 +1776,7 @@ function handleBroadcastCommand(command, args) {
 
 const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
-    'time', '12', '24', 'whoami', 'profile', 'whois', '8ball', 'fortune',
+    'time', '12', '24', 'whoami', 'profile', 'whois', 'flag', '8ball', 'fortune',
     'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i',
     'alone', 'summon'
 ];
