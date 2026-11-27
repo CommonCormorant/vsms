@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -349,7 +350,7 @@ func (m *model) cmdHelp() {
 		"/im <who>, <message> - private message (! also works)",
 		"/enc <who>, [level,] <message> - encrypted private message (lo 32, med 128, hi 256, default 64; 0 turns auto-encryption off)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
-		"/message <who>, <message> - send mail (@ also works)",
+		"/message <who>, <message> - send mail (@ also works; /mail cc(x), msg for hex, cc(rx), cc(xx), cc(xr), or cc() for xr)",
 		"/mail ? - check for new mail",
 		"/invite - shareable link to this room",
 		"/history [minutes] - fetch server history (default 15, max 90)",
@@ -455,6 +456,82 @@ func (m *model) cmdEnc(rest string) {
 	m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
 }
 
+// mailReverse reverses a string by rune.
+func mailReverse(s string) string {
+	runes := []rune(s)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes)
+}
+
+// mailEncrypt applies a hex-mail transform to a message: x = hex,
+// rx = reverse then hex, xx = hex then hex, xr = hex then reverse.
+// Matches the JS client's encryption object (ASCII text).
+func mailEncrypt(flag, text string) string {
+	switch flag {
+	case "x":
+		return hex.EncodeToString([]byte(text))
+	case "rx":
+		return hex.EncodeToString([]byte(mailReverse(text)))
+	case "xx":
+		return hex.EncodeToString([]byte(hex.EncodeToString([]byte(text))))
+	case "xr":
+		return mailReverse(hex.EncodeToString([]byte(text)))
+	}
+	return text
+}
+
+// mailDecrypt undoes a hex-mail transform by its flag. A bad payload
+// is returned as-is rather than dropped.
+func mailDecrypt(flag, text string) string {
+	switch flag {
+	case "x":
+		if raw, err := hex.DecodeString(text); err == nil {
+			return string(raw)
+		}
+	case "rx":
+		if raw, err := hex.DecodeString(text); err == nil {
+			return mailReverse(string(raw))
+		}
+	case "xx":
+		if mid, err := hex.DecodeString(text); err == nil {
+			if raw, err := hex.DecodeString(string(mid)); err == nil {
+				return string(raw)
+			}
+		}
+	case "xr":
+		if raw, err := hex.DecodeString(mailReverse(text)); err == nil {
+			return string(raw)
+		}
+	}
+	return text
+}
+
+// parseMailRecipient splits a mail recipient like "cc(x)" into the
+// name and the hex flag. No parens means plain mail (flag "").
+// Empty parens "cc()" default to "xr". The type is case
+// insensitive. An unknown type is an error.
+func parseMailRecipient(recipient string) (name, flag string, ok bool) {
+	recipient = strings.TrimSpace(recipient)
+	if !strings.HasSuffix(recipient, ")") {
+		return recipient, "", true
+	}
+	open := strings.LastIndex(recipient, "(")
+	if open < 0 {
+		return recipient, "", true
+	}
+	name = strings.TrimSpace(recipient[:open])
+	typ := strings.ToLower(strings.TrimSpace(recipient[open+1 : len(recipient)-1]))
+	switch typ {
+	case "":
+		return name, "xr", true
+	case "x", "rx", "xx", "xr":
+		return name, typ, true
+	}
+	return "", "", false
+}
+
 func (m *model) cmdMail(rest string) {
 	if strings.TrimSpace(rest) == "?" {
 		m.checkMail()
@@ -469,8 +546,20 @@ func (m *model) cmdMail(rest string) {
 		m.addLine(styleErr.Render("Usage: /message recipient, message"))
 		return
 	}
-	// The trailing ||U is part of the JS client's mail format.
-	m.sendRaw("MAIL|" + m.myNick + "|" + recipient + "|" + message + "||U")
+	// A parenthesised type after the name picks a hex transform:
+	// cc(x), cc(rx), cc(xx), cc(xr); cc() defaults to xr; no
+	// parens means plain mail.
+	name, flag, ok := parseMailRecipient(recipient)
+	if !ok {
+		m.addLine(styleErr.Render("Unknown mail type. Use (x), (rx), (xx), (xr), or () for xr."))
+		return
+	}
+	if flag != "" {
+		message = mailEncrypt(flag, message)
+	}
+	// The trailing |flag|U is the JS client's mail format; the flag
+	// is empty for plain mail.
+	m.sendRaw("MAIL|" + m.myNick + "|" + name + "|" + message + "|" + flag + "|U")
 }
 
 // cmdSend is the image macro. Picking Image in the dropdown composes
@@ -807,6 +896,14 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 			end = len(parts)
 		}
 		content := strings.Join(parts[3:end], "|")
+		// A hex flag means the content is encoded; decode it before
+		// showing it, so hex mail reads plain on this client too.
+		// An unknown flag is shown as-is.
+		if len(parts) >= 2 {
+			if flag := parts[len(parts)-2]; flag == "x" || flag == "rx" || flag == "xx" || flag == "xr" {
+				content = mailDecrypt(flag, content)
+			}
+		}
 		m.addLine(styleMsg.Render("[Mail from " + sender + "]: " + content))
 	case "WELCOME":
 		if len(parts) > 1 && parts[1] != "" {

@@ -1337,27 +1337,35 @@ async function handleMailOutCommand() {
     }
 }
 
-function handleEncryptedMessageCommand(type, recipient, message) {
-    if (state.userName.startsWith('guest')) {
-        addMessageToChat('You must change your /name from "guest" to send encrypted mail.', 'error-message');
-        return;
+// Parse a mail recipient, which may carry a hex type in parens:
+// "cc" -> plain mail, "cc(x)" -> hex, "cc(rx)" -> reverse-then-hex,
+// "cc(xx)" -> double hex, "cc(xr)" -> hex-then-reverse, "cc()" -> xr.
+// The type is case insensitive and spaces inside the parens are
+// ignored. Returns {name, flag, type}, or {error} for an unknown
+// type. Only a trailing "(...)" counts as a type suffix; anything
+// else is the nickname as-is.
+function parseMailRecipient(recipient) {
+    const r = String(recipient).trim();
+    if (r.endsWith(')')) {
+        const open = r.lastIndexOf('(');
+        if (open > 0) {
+            const name = r.slice(0, open).trim();
+            const type = r.slice(open + 1, -1).trim().toLowerCase();
+            const byType = {
+                '': {flag: 'xr', type: 'encr2'},
+                'x': {flag: 'x', type: 'enc'},
+                'rx': {flag: 'rx', type: 'encr'},
+                'xx': {flag: 'xx', type: 'enc2'},
+                'xr': {flag: 'xr', type: 'encr2'}
+            };
+            const hit = byType[type];
+            if (hit) {
+                return {name: name, flag: hit.flag, type: hit.type};
+            }
+            return {error: 'Unknown mail type. Use (x), (rx), (xx), (xr), or () for xr.'};
+        }
     }
-    const flags = {
-        enc: 'x',
-        encr: 'rx',
-        enc2: 'xx',
-        encr2: 'xr'
-    };
-
-    const flag = flags[type];
-    if (!flag) {
-        addMessageToChat(`Unknown encryption type: ${type}`, 'error-message');
-        return;
-    }
-
-    const encryptedMessage = encryption[type](message);
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${encryptedMessage}|${flag}|U`;
-    serverApi.sendWsMessage(mailMessage);
+    return {name: r, flag: '', type: null};
 }
 
 function handleMessageCommand(recipient, message) {
@@ -1365,7 +1373,16 @@ function handleMessageCommand(recipient, message) {
         addMessageToChat('You must change your /name from "guest" to send mail.', 'error-message');
         return;
     }
-    const mailMessage = `MAIL|${state.userName}|${recipient}|${message}||U`;
+    const parsed = parseMailRecipient(recipient);
+    if (parsed.error) {
+        addMessageToChat(parsed.error, 'error-message');
+        return;
+    }
+    let outMessage = message;
+    if (parsed.flag !== '') {
+        outMessage = encryption[parsed.type](message);
+    }
+    const mailMessage = `MAIL|${state.userName}|${parsed.name}|${outMessage}|${parsed.flag}|U`;
     serverApi.sendWsMessage(mailMessage);
 }
 
@@ -1405,8 +1422,10 @@ const decryption = {
 
 // ---- /enc /encrypt: session-id XOR cipher, sent as an IM ----
 // This replaces the old hex/MAIL /enc for /enc and /encrypt. The old
-// hex variants (encr, enc2, ...) and the MAIL decryption above are
-// left alone, so mail encrypted the old way still reads.
+// hex-mail commands (encr, enc2, encr2, ...) are gone; their types
+// now ride on /mail and @ as a paren suffix on the recipient, e.g.
+// /mail cc(xr), hello. The MAIL decryption above is left alone, so
+// mail encrypted the old way still reads.
 // Cipher (must match the Go rt client exactly):
 //   key string = level + ":" + session id reversed. The level goes
 //   first so it matters even for a short message; the reversed
@@ -1541,8 +1560,7 @@ function showHelp() {
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
         <br>/enc [recipient], [level,] [message] - Send an encrypted instant message (/encrypt also works). Levels: lo 32, med 128, hi 256, default 64; a number rounds down to a power of two (max 512); 0 turns auto-encryption off. The receiver sees it as an IM, in green.
         <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
-        <br>/message [recipient], [message] - Send mail to a user (@ also works).
-        <br>/message [recipient], [message] - Send mail to a user (/msg, /mail, @ also works).
+        <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Add a hex type to the recipient to obfuscate it: (x) hex, (rx) reverse-then-hex, (xx) double hex, (xr) hex-then-reverse, () for xr. Example: /mail cc(xr), hello
         <br>/mail ? - Check for new mail (@? also works).
         <br>/invite - Get a shareable link to this chat session (/i, + also work).
         <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).
@@ -1839,17 +1857,6 @@ chatForm.addEventListener('submit', async (e) => {
                 handleEncCommand(recipient, tail);
             } else {
                 addMessageToChat('Usage: /enc recipient, [level,] message', 'system-message');
-            }
-        } else if (['encr', 'encryptr', 'enc2', 'encrypt2', 'encr2', 'encryptr2'].includes(command)) {
-            // Older hex-obfuscation variants, sent as MAIL. Left alone.
-            const match = args.match(/^(.+?),(.+)$/s);
-            if (match) {
-                const recipient = match[1].trim();
-                const message = match[2].trim();
-                let type = command.replace('encrypt', 'enc');
-                handleEncryptedMessageCommand(type, recipient, message);
-            } else {
-                addMessageToChat(`Usage: /${command} recipient, message`, 'system-message');
             }
         } else if (['roll', 'flip'].includes(command)) {
             handleBroadcastCommand(command, args);
@@ -2329,6 +2336,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 
