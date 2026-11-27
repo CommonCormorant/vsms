@@ -24,7 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -70,7 +70,7 @@ type model struct {
 	online    []string // everyone in the room, including self
 	lines     []string // rendered message lines
 	viewport  viewport.Model
-	input     textinput.Model
+	input     textarea.Model
 	width     int
 	height    int
 	focus     int
@@ -104,13 +104,22 @@ var (
 )
 
 func newModel(c *client, sessionID, baseURL, nick string, early, history []chatMessage) model {
-	ti := textinput.New()
-	ti.Prompt = "> "
-	ti.Placeholder = "type a message, /help for commands"
-	ti.CharLimit = 2000
-	ti.Focus()
-	ti.PromptStyle = styleMsg
-	ti.TextStyle = styleMsg
+	// A textarea, not a textinput, so a message wraps onto the next
+	// line when it hits the right edge instead of scrolling off it
+	// and looking cut off. Enter submits (InsertNewline disabled);
+	// the height grows with the wrapped lines, up to 5.
+	ta := textarea.New()
+	ta.Prompt = "> "
+	ta.Placeholder = "type a message, /help for commands"
+	ta.CharLimit = 2000
+	ta.ShowLineNumbers = false
+	ta.KeyMap.InsertNewline.SetEnabled(false)
+	ta.Focus()
+	// Keep the input text green like the old textinput.
+	ta.FocusedStyle.Text = styleMsg
+	ta.FocusedStyle.Prompt = styleMsg
+	ta.BlurredStyle.Text = styleMsg
+	ta.BlurredStyle.Prompt = styleMsg
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -121,7 +130,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		baseURL:   baseURL,
 		myNick:    nick,
 		viewport:  vp,
-		input:     ti,
+		input:     ta,
 		focus:     focusInput,
 		rowSel:    0,
 		status:    "connecting…",
@@ -162,21 +171,37 @@ func tickHeartbeat() tea.Cmd {
 // layout recomputes the viewport height and input width from the
 // window size and whether the dropdown is open.
 func (m *model) layout() {
-	// Lines taken: live row 1, dropdown ddHeight or 0, input 1, status 1.
-	used := 1 + 1 + 1
-	if m.ddOpen {
-		used += ddHeight
+	m.viewport.Width = m.width
+	// The textarea's width is the terminal width minus the "> " prompt.
+	w := m.width - len(m.input.Prompt) - 1
+	if w < 10 {
+		w = 10
 	}
-	h := m.height - used
+	m.input.SetWidth(w)
+	m.syncInputHeight()
+}
+
+// syncInputHeight grows the textarea with its wrapped lines (1..5)
+// and gives the rest of the screen to the viewport.
+func (m *model) syncInputHeight() {
+	h := m.input.LineCount()
 	if h < 1 {
 		h = 1
 	}
-	m.viewport.Height = h
-	m.viewport.Width = m.width
-	m.input.Width = m.width - len(m.input.Prompt) - 1
-	if m.input.Width < 10 {
-		m.input.Width = 10
+	if h > 5 {
+		h = 5
 	}
+	m.input.SetHeight(h)
+	// Lines taken: live row 1, dropdown ddHeight or 0, input h, status 1.
+	used := 1 + h + 1
+	if m.ddOpen {
+		used += ddHeight
+	}
+	vh := m.height - used
+	if vh < 1 {
+		vh = 1
+	}
+	m.viewport.Height = vh
 }
 
 // addLine appends a rendered line and keeps the viewport pinned to the
@@ -330,6 +355,7 @@ func (m *model) pickDropdown() {
 	}
 	m.input.SetValue(text)
 	m.input.CursorEnd()
+	m.syncInputHeight()
 	m.closeDropdown()
 }
 
@@ -415,19 +441,24 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Click anywhere else: the input line is right above the status
-	// line, at 1 + (dropdown ? 7 : 0) + viewport height. A tap on it
+	// Click anywhere else: the input block sits right above the
+	// status line, at 1 + (dropdown ? 7 : 0) + viewport height, and
+	// is inputHeight lines tall (it wraps). A tap on any of its lines
 	// focuses the input so the phone keyboard comes back; a tap on
 	// the messages blurs it so the keyboard dismisses and the user
 	// can read. Either way the dropdown closes.
-	inputY := 1 + m.viewport.Height
+	inputTop := 1 + m.viewport.Height
 	if m.ddOpen {
-		inputY += ddHeight
+		inputTop += ddHeight
+	}
+	inputH := m.input.LineCount()
+	if inputH < 1 {
+		inputH = 1
 	}
 	if m.ddOpen {
 		m.closeDropdown()
 	}
-	if y == inputY {
+	if y >= inputTop && y < inputTop+inputH {
 		m.focus = focusInput
 		m.input.Focus()
 	} else {
@@ -496,6 +527,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			text := m.input.Value()
 			m.input.SetValue("")
+			m.syncInputHeight()
 			if strings.TrimSpace(text) == "" {
 				return m, nil
 			}
@@ -510,9 +542,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Anything else goes to the input.
+	// Anything else goes to the input. After it updates, the wrapped
+	// line count may have changed, so re-sync the input height (and
+	// the viewport with it) before the next render.
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.syncInputHeight()
 	return m, cmd
 }
 

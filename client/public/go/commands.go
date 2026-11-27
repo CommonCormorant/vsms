@@ -29,6 +29,21 @@ import (
 	"time"
 )
 
+// isReviewShortcut reports whether the input is "/<count>" or "/all",
+// the JS client's bare-/ shortcut for /review. A "/<word>" is a
+// command, not a review, so only digits (or "all") count.
+func isReviewShortcut(trimmed string) bool {
+	if !strings.HasPrefix(trimmed, "/") || len(trimmed) < 2 {
+		return false
+	}
+	rest := trimmed[1:]
+	if strings.EqualFold(rest, "all") {
+		return true
+	}
+	_, err := strconv.Atoi(rest)
+	return err == nil
+}
+
 // fortunes and eightBall are the JS client's lists, verbatim.
 var fortunes = []string{
 	"A pleasant surprise is waiting for you.",
@@ -83,7 +98,9 @@ func (m *model) handleInput(text string) {
 		return
 	}
 	// Prefix aliases, the same as the JS client: ! is /im, @ is
-	// /message, > is /send.
+	// /message, > is /send, ? is /help, % is /echo, : is /me,
+	// . is /name, & appends to the nickname, + is /invite,
+	// ~ is /clear, and a bare / (or /<count>) is /review.
 	switch {
 	case strings.HasPrefix(trimmed, "!"):
 		m.cmdIM(strings.TrimSpace(trimmed[1:]))
@@ -93,6 +110,36 @@ func (m *model) handleInput(text string) {
 		return
 	case strings.HasPrefix(trimmed, ">"):
 		m.cmdSend(strings.TrimSpace(trimmed[1:]))
+		return
+	case trimmed == "?":
+		m.cmdHelp()
+		return
+	case strings.HasPrefix(trimmed, "%"):
+		if txt := strings.TrimSpace(trimmed[1:]); txt != "" {
+			m.sendRaw("ECHO|" + m.myNick + "|" + txt)
+		}
+		return
+	case strings.HasPrefix(trimmed, ":"):
+		m.cmdEmote(strings.TrimSpace(trimmed[1:]))
+		return
+	case strings.HasPrefix(trimmed, "."):
+		m.cmdName(strings.TrimSpace(trimmed[1:]))
+		return
+	case strings.HasPrefix(trimmed, "&"):
+		if suffix := strings.TrimSpace(trimmed[1:]); suffix != "" {
+			m.cmdName(m.myNick + suffix)
+		}
+		return
+	case trimmed == "+":
+		m.addLine(styleSys.Render("Share link: " + m.baseURL + "/rt/?sID=" + m.sessionID))
+		return
+	case trimmed == "~":
+		m.lines = nil
+		m.viewport.SetContent("")
+		m.addLine(styleSys.Render("Chat cleared."))
+		return
+	case trimmed == "/" || isReviewShortcut(trimmed):
+		m.cmdReview(strings.TrimSpace(trimmed[1:]))
 		return
 	}
 	if !strings.HasPrefix(trimmed, "/") {
