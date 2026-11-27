@@ -2,18 +2,19 @@
 // commands.go: input parsing, slash commands, and incoming messages.
 //
 // Wire formats (from server/main.go and RetroTerm/script.js):
-//   out: MSG|nick|text, IM|nick|recipient|text|id,
-//        MAIL|nick|recipient|text||U, NICK|nick|newName,
-//        PEER|nick|recipient|kind|payload, PING|nick,
-//        EMOTE|nick|action, ECHO|nick|text, FLAG|nick|emoji,
-//        PROFILE|nick|bio
-//   in:  JSON ChatMessage, message field pipe-delimited the same way:
-//        MSG|sender|text, IM|sender|recipient|text,
-//        WELCOME|a,b,c, JOIN|nick, PART|nick, NICK_UPDATE|old|new,
-//        PEER|sender|recipient|kind|payload, DELIVERY_FAILED|...,
-//        STORE_SUCCESS|recipient, STORE_FAILED|err, PONG
-//   A "|" inside a message body survives because display joins
-//   parts[2:] (or parts[3:]) back together.
+//
+//	out: MSG|nick|text, IM|nick|recipient|text|id,
+//	     MAIL|nick|recipient|text||U, NICK|nick|newName,
+//	     PEER|nick|recipient|kind|payload, PING|nick,
+//	     EMOTE|nick|action, ECHO|nick|text, FLAG|nick|emoji,
+//	     PROFILE|nick|bio
+//	in:  JSON ChatMessage, message field pipe-delimited the same way:
+//	     MSG|sender|text, IM|sender|recipient|text,
+//	     WELCOME|a,b,c, JOIN|nick, PART|nick, NICK_UPDATE|old|new,
+//	     PEER|sender|recipient|kind|payload, DELIVERY_FAILED|...,
+//	     STORE_SUCCESS|recipient, STORE_FAILED|err, PONG
+//	A "|" inside a message body survives because display joins
+//	parts[2:] (or parts[3:]) back together.
 package main
 
 import (
@@ -29,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // isReviewShortcut reports whether the input is "/<count>" or "/all",
@@ -204,11 +207,12 @@ func imID() string {
 }
 
 // handleInput dispatches a submitted input line. Plain text goes out as
-// a public message; anything else is a command.
-func (m *model) handleInput(text string) {
+// a public message; anything else is a command. It returns a command
+// when one is needed (today only the file picker, opened by /send).
+func (m *model) handleInput(text string) tea.Cmd {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return
+		return nil
 	}
 	// Prefix aliases, the same as the JS client: ! is /im, @ is
 	// /message, > is /send, ? is /help, % is /echo, : is /me,
@@ -217,47 +221,46 @@ func (m *model) handleInput(text string) {
 	switch {
 	case strings.HasPrefix(trimmed, "!"):
 		m.cmdIM(strings.TrimSpace(trimmed[1:]))
-		return
+		return nil
 	case strings.HasPrefix(trimmed, "@"):
 		m.cmdMail(strings.TrimSpace(trimmed[1:]))
-		return
+		return nil
 	case strings.HasPrefix(trimmed, ">"):
-		m.cmdSend(strings.TrimSpace(trimmed[1:]))
-		return
+		return m.cmdSend(strings.TrimSpace(trimmed[1:]))
 	case trimmed == "?":
 		m.cmdHelp()
-		return
+		return nil
 	case strings.HasPrefix(trimmed, "%"):
 		if txt := strings.TrimSpace(trimmed[1:]); txt != "" {
 			m.sendRaw("ECHO|" + m.myNick + "|" + txt)
 		}
-		return
+		return nil
 	case strings.HasPrefix(trimmed, ":"):
 		m.cmdEmote(strings.TrimSpace(trimmed[1:]))
-		return
+		return nil
 	case strings.HasPrefix(trimmed, "."):
 		m.cmdName(strings.TrimSpace(trimmed[1:]))
-		return
+		return nil
 	case strings.HasPrefix(trimmed, "&"):
 		if suffix := strings.TrimSpace(trimmed[1:]); suffix != "" {
 			m.cmdName(m.myNick + suffix)
 		}
-		return
+		return nil
 	case trimmed == "+":
 		m.addLine(styleSys.Render("Share link: " + m.baseURL + "/rt/?sID=" + m.sessionID))
-		return
+		return nil
 	case trimmed == "~":
 		m.lines = nil
 		m.viewport.SetContent("")
 		m.addLine(styleSys.Render("Chat cleared."))
-		return
+		return nil
 	case trimmed == "/" || isReviewShortcut(trimmed):
 		m.cmdReview(strings.TrimSpace(trimmed[1:]))
-		return
+		return nil
 	}
 	if !strings.HasPrefix(trimmed, "/") {
 		m.sendRaw("MSG|" + m.myNick + "|" + text)
-		return
+		return nil
 	}
 	fields := strings.Fields(trimmed)
 	cmd := strings.ToLower(fields[0])
@@ -287,7 +290,7 @@ func (m *model) handleInput(text string) {
 	case "/enc", "/encrypt":
 		m.cmdEnc(rest)
 	case "/send", "/s":
-		m.cmdSend(rest)
+		return m.cmdSend(rest)
 	case "/message", "/msg", "/mail":
 		m.cmdMail(rest)
 	case "/me", "/emote", "/em":
@@ -339,8 +342,8 @@ func (m *model) handleInput(text string) {
 	default:
 		m.addLine(styleErr.Render("Unknown command " + cmd + " — /help for a list."))
 	}
+	return nil
 }
-
 func (m *model) cmdHelp() {
 	m.addLine(styleSys.Render("Available commands:"))
 	for _, l := range []string{
@@ -590,25 +593,29 @@ func (m *model) cmdMail(rest string) {
 }
 
 // cmdSend is the image macro. Picking Image in the dropdown composes
-// ">Name, image" into the input; running that macro lands here, and in
-// v1 peer-to-peer is not implemented, so it gets the Dave line and
-// nothing goes on the wire.
-func (m *model) cmdSend(rest string) {
+// ">Name, image" into the input; running that macro opens the file
+// picker, and the chosen file goes out peer to peer. Room send
+// ("/send all, i") is not built yet.
+func (m *model) cmdSend(rest string) tea.Cmd {
 	if m.isGuest() {
 		m.addLine(styleErr.Render(`You must change your /name from "guest" to send an image.`))
-		return
+		return nil
 	}
 	recipient, thing, ok := splitRecipient(rest)
 	if !ok || recipient == "" {
 		m.addLine(styleErr.Render(`Usage: /send recipient, image  (recipient or "all" for the room)`))
-		return
+		return nil
 	}
 	t := strings.ToLower(strings.TrimSpace(thing))
 	if t != "i" && t != "img" && t != "image" {
 		m.addLine(styleErr.Render(`Usage: /send recipient, image  (only images for now — use i, img or image)`))
-		return
+		return nil
 	}
-	m.addLine(styleSys.Render(daveMsg))
+	if strings.EqualFold(recipient, "all") {
+		m.addLine(styleSys.Render("Room send isn't built yet — send to one person for now."))
+		return nil
+	}
+	return m.openPicker(recipient)
 }
 
 func (m *model) cmdEmote(rest string) {
@@ -1014,16 +1021,16 @@ func formatSize(bytes int64) string {
 // handleIncoming renders one server message. quiet is set for the
 // connect-time burst (early messages and history) so join/leave noise
 // from the backlog does not re-announce.
-func (m *model) handleIncoming(cm chatMessage, quiet bool) {
+func (m *model) handleIncoming(cm chatMessage, quiet bool) tea.Cmd {
 	parts := strings.Split(cm.Message, "|")
 	if len(parts) == 0 {
-		return
+		return nil
 	}
 	typ := parts[0]
 	switch typ {
 	case "MSG":
 		if len(parts) < 3 {
-			return
+			return nil
 		}
 		sender := parts[1]
 		text := strings.Join(parts[2:], "|")
@@ -1034,12 +1041,12 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		}
 	case "EMOTE":
 		if len(parts) < 3 {
-			return
+			return nil
 		}
 		m.addLine(styleMsg.Render("* " + parts[1] + " " + strings.Join(parts[2:], "|")))
 	case "ROLL":
 		if len(parts) < 3 {
-			return
+			return nil
 		}
 		// ROLL|nick|d6 4 — content is "d<sides> <result>".
 		fields := strings.Fields(strings.Join(parts[2:], "|"))
@@ -1050,12 +1057,12 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		}
 	case "FLIP":
 		if len(parts) < 3 {
-			return
+			return nil
 		}
 		m.addLine(styleMsg.Render(parts[1] + ": 🪙 Coin flip: " + strings.Join(parts[2:], "|")))
 	case "IM":
 		if len(parts) < 4 {
-			return
+			return nil
 		}
 		sender := parts[1]
 		text := strings.Join(parts[3:], "|")
@@ -1069,7 +1076,7 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 				if level, err := strconv.Atoi(rest[:i]); err == nil {
 					if plain, ok := encDecrypt(rest[i+1:], m.sessionID, level); ok {
 						m.addLine(styleEnc.Render("IM from " + sender + ": " + plain))
-						return
+						return nil
 					}
 				}
 			}
@@ -1082,7 +1089,7 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		// from index 3 up to the last two parts, re-joined, so a
 		// message containing | survives.
 		if len(parts) < 4 {
-			return
+			return nil
 		}
 		sender := parts[1]
 		end := len(parts) - 2
@@ -1119,7 +1126,7 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		}
 	case "JOIN":
 		if len(parts) < 2 {
-			return
+			return nil
 		}
 		nick := parts[1]
 		found := false
@@ -1150,7 +1157,7 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 			if !quiet {
 				m.addLine(styleSys.Render("* " + nick + " has left."))
 			}
-			return
+			return nil
 		}
 		// A PART with content is a parting message, not a leave.
 		if len(parts) >= 3 {
@@ -1158,7 +1165,7 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		}
 	case "NICK_UPDATE":
 		if len(parts) < 3 {
-			return
+			return nil
 		}
 		oldNick, newNick := parts[1], parts[2]
 		for i, n := range m.online {
@@ -1189,10 +1196,13 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 			m.addLine(styleErr.Render("[Can't send: " + parts[1] + " is not available.]"))
 		}
 	case "PEER":
-		m.handlePeer(parts)
+		return m.handlePeer(parts)
 	case "PEER_FAILED":
 		if len(parts) >= 3 {
 			m.addLine(styleErr.Render("[Peer failed: " + parts[1] + " is not available (" + parts[2] + ").]"))
+			// A failed send to this peer is dead: drop the outgoing
+			// transfer so a later send is not blocked by it.
+			m.peerOutDrop(parts[1])
 		}
 	case "STORE_SUCCESS":
 		if len(parts) >= 2 {
@@ -1211,20 +1221,18 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		// a protocol addition is visible instead of invisible.
 		m.addLine(styleDim.Render(cm.Message))
 	}
+	return nil
 }
 
-// handlePeer handles PEER signaling. In v1 the client never starts a
-// transfer and cannot receive one (no WebRTC), so a file request is
-// declined at once and the sender is told promptly instead of waiting
-// out the 80-second accept window.
-// handlePeer routes an incoming PEER message. v1 receives only: a
-// file request is auto-accepted, an offer is answered, ICE candidates
-// are added or queued, and decline/bye ends the transfer. An answer
-// (for a transfer v1 never started) is ignored — sending is Step 2.
-func (m *model) handlePeer(parts []string) {
+// handlePeer routes an incoming PEER message. Receiving: a file
+// request opens the Y/n prompt, an offer is answered, ICE candidates
+// are added or queued, and decline/bye ends the transfer. Sending:
+// accept and answer drive the outgoing transfer. Returns the
+// prompt-timeout command for a file request, nil otherwise.
+func (m *model) handlePeer(parts []string) tea.Cmd {
 	// PEER|SENDER|RECIPIENT|KIND|PAYLOAD...
 	if len(parts) < 4 {
-		return
+		return nil
 	}
 	sender := parts[1]
 	kind := parts[3]
@@ -1234,12 +1242,21 @@ func (m *model) handlePeer(parts []string) {
 	}
 	switch kind {
 	case "file":
-		m.peerFileAccept(sender, payload)
+		return m.peerFileAccept(sender, payload)
 	case "offer":
 		m.peerOffer(sender, payload)
+	case "answer":
+		m.peerAnswer(sender, payload)
+	case "accept":
+		m.peerAccept(sender, payload)
 	case "ice":
 		m.peerIce(sender, payload)
-	case "decline", "bye":
-		m.peerDrop(sender)
+	case "decline":
+		// The JS handlePeerDecline touches outgoing only; a
+		// decline is always about an image we offered.
+		m.peerDecline(sender)
+	case "bye":
+		m.peerBye(sender)
 	}
+	return nil
 }

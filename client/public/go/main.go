@@ -2,13 +2,15 @@
 // main.go: entry point, URL parsing, nickname memory, history fetch.
 //
 // Usage:
-//   rt [-nick name] 'https://vsms.gameshiponline.com/rt/?sID=...'
+//
+//	rt [-nick name] 'https://vsms.gameshiponline.com/rt/?sID=...'
+//
 // The URL is only used for its host and its sID; the client then speaks
 // the same WebSocket protocol as RetroTerm. The nickname is remembered
 // in ~/retro/nick (the Go equivalent of the JS client's localStorage
 // settings) and reused across sessions. Incoming images are saved to
-// ~/retro/imgs/ once peer receiving exists; in v1 that directory is
-// only created, and file requests are declined.
+// ~/retro/imgs/; the receiver answers a Y/n prompt first, and the
+// sender picks a file with the /send image picker.
 package main
 
 import (
@@ -28,11 +30,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// daveMsg is what the client prints when the user tries to run an
-// image macro. Peer-to-peer is not implemented in this client (yet);
-// composing the text works, running it does not.
-const daveMsg = "I'm sorry Dave: peer-to-peer services aren't implemented in this client (yet)."
 
 func homeDir() string {
 	h, err := os.UserHomeDir()

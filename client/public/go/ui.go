@@ -20,10 +20,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/filepicker"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,32 +66,37 @@ type nameSpan struct {
 }
 
 type model struct {
-	c         *client
-	sessionID string
-	baseURL   string
-	myNick    string
-	online    []string // everyone in the room, including self
-	flags     map[string]string // nick -> flag emoji ("" = none); flagFetching = fetch in flight
-	peer      *peerState // in-progress incoming file transfers (WebRTC)
-	lines     []string // rendered message lines
-	viewport  viewport.Model
-	input     textinput.Model
-	width     int
-	height    int
-	focus     int
-	rowSel    int
-	ddOpen    bool
-	ddName    string
-	ddIdx     int
-	status    string
-	quitting  bool
-	errMsg    string
-	spans     []nameSpan // name click targets from the last render
-	ready     bool
-	startTime time.Time // session start, for /uptime
-	profile   string    // profile bio, for /profile
-	welcomed  bool      // true after the first WELCOME; later ones are silent roster resyncs
-	encLevel  int       // remembered /enc level (0 = plain IMs); /enc 0 turns auto-encryption off
+	c            *client
+	sessionID    string
+	baseURL      string
+	myNick       string
+	online       []string          // everyone in the room, including self
+	flags        map[string]string // nick -> flag emoji ("" = none); flagFetching = fetch in flight
+	peer         *peerState        // in-progress file transfers, both directions (WebRTC)
+	picker       filepicker.Model  // the /send file picker, when open
+	picking      bool              // the file picker modal is open
+	pickTo       string            // recipient for the pending image send
+	promptSender string            // nick with a pending incoming-image prompt ("" = none)
+	promptSeq    int               // prompt generation; stale timeout ticks carry an old seq
+	lines        []string          // rendered message lines
+	viewport     viewport.Model
+	input        textinput.Model
+	width        int
+	height       int
+	focus        int
+	rowSel       int
+	ddOpen       bool
+	ddName       string
+	ddIdx        int
+	status       string
+	quitting     bool
+	errMsg       string
+	spans        []nameSpan // name click targets from the last render
+	ready        bool
+	startTime    time.Time // session start, for /uptime
+	profile      string    // profile bio, for /profile
+	welcomed     bool      // true after the first WELCOME; later ones are silent roster resyncs
+	encLevel     int       // remembered /enc level (0 = plain IMs); /enc 0 turns auto-encryption off
 }
 
 type wsMsg struct{ cm chatMessage }
@@ -230,7 +238,7 @@ func hardWrapLine(s string, w int) []string {
 	inEsc := false
 	for _, r := range s {
 		if inEsc {
-			if (r >= '@' && r <= '~') {
+			if r >= '@' && r <= '~' {
 				inEsc = false
 			}
 			continue
@@ -479,6 +487,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		m.layout()
+		if m.picking {
+			m.picker.SetHeight(m.pickerListHeight())
+		}
 		// Do NOT re-focus here. A resize is also how the phone tells
 		// us the keyboard was shown or hidden, and re-focusing on
 		// every resize pops the keyboard straight back up after the
@@ -491,9 +502,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickHeartbeat()
 
 	case wsMsg:
-		m.handleIncoming(msg.cm, false)
+		cmd := m.handleIncoming(msg.cm, false)
 		// The roster may have changed; fetch flags for anyone new.
-		return m, m.fetchRoomFlags()
+		return m, tea.Batch(cmd, m.fetchRoomFlags())
+
+	case peerPromptTimeoutMsg:
+		m.peerPromptTimeout(msg.sender, msg.seq)
+		return m, nil
 
 	case flagsMsg:
 		for nick, flag := range msg.flags {
@@ -514,6 +529,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
+	// While the file picker is open, messages the switch above
+	// didn't take go to it — this is how its directory reads
+	// (readDirMsg) arrive. Anything else is ignored by it.
+	if m.picking {
+		var cmd tea.Cmd
+		m.picker, cmd = m.picker.Update(msg)
+		return m, cmd
+	}
+
 	// Let the viewport and input see anything not handled above.
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -521,6 +545,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// While the file picker is open it owns the screen; clicks
+	// behind the modal must not open dropdowns or move focus.
+	if m.picking {
+		return m, nil
+	}
 	// In bubbletea v1.3 the event kind is msg.Type (MouseEventType);
 	// msg.Button is the raw button (MouseButtonLeft, ...).
 	if msg.Type != tea.MouseLeft || msg.Action != tea.MouseActionPress {
@@ -589,6 +618,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	// The file picker owns every key while it is open.
+	if m.picking {
+		return m.handlePickerKey(msg)
+	}
+
 	switch m.focus {
 	case focusDropdown:
 		switch msg.String() {
@@ -625,6 +659,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default: // focusInput
+		// A pending image prompt answers y/n (or Enter for yes,
+		// the default) when the input is empty, so a keypress
+		// never eats a letter the user is typing into a message.
+		// With text in the input, keys behave as normal and the
+		// prompt waits for the 80-second timeout.
+		if m.promptSender != "" && m.input.Value() == "" {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.peerPromptAccept()
+				return m, nil
+			case "n", "N":
+				m.peerPromptDecline()
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "tab":
 			if len(m.others()) > 0 {
@@ -645,14 +694,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if strings.TrimSpace(text) == "" {
 				return m, nil
 			}
-			m.handleInput(text)
+			cmd := m.handleInput(text)
 			if m.quitting {
 				// /quit sets quitting but must also tell bubbletea
 				// to exit, or the program sits in the alt screen
 				// showing nothing and the terminal never comes back.
 				return m, tea.Quit
 			}
-			return m, nil
+			return m, cmd
 		}
 	}
 
@@ -668,6 +717,11 @@ func (m model) View() string {
 	}
 	if !m.ready {
 		return "connecting…"
+	}
+	// The file picker is a modal over the chat: the chat is hidden
+	// behind it while it is open and returns when it closes.
+	if m.picking {
+		return m.renderPickerModal()
 	}
 	var b strings.Builder
 	b.WriteString(m.renderLiveRow())
@@ -686,4 +740,136 @@ func (m model) View() string {
 	}
 	b.WriteString(styleDim.Render(status))
 	return b.String()
+}
+
+// ------------------------------------------------------------------
+// File picker: the /send image chooser.
+//
+// QuickBASIC look, per spec: blue background (#0000AA), gray default
+// text (#AAAAAA), allowed images white and bold, folders just white.
+// The picker is a centered modal over the chat; the chat is hidden
+// behind it while it is open and returns when it closes.
+// ------------------------------------------------------------------
+
+var (
+	qbBlue  = lipgloss.Color("#0000AA") // QuickBASIC blue background
+	qbGray  = lipgloss.Color("#AAAAAA") // QuickBASIC gray text
+	qbWhite = lipgloss.Color("#FFFFFF")
+
+	stylePickerTitle = lipgloss.NewStyle().Foreground(qbWhite).Bold(true).Background(qbBlue)
+	stylePickerHint  = lipgloss.NewStyle().Foreground(qbGray).Background(qbBlue)
+	stylePickerBox   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14")).Background(qbBlue).Padding(0, 1)
+)
+
+// pickerImageTypes are the only selectable files. The filepicker's
+// canSelect is a case-sensitive suffix match, so both cases are
+// listed — a camera file named IMG_1234.JPG must be pickable.
+var pickerImageTypes = []string{
+	".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG",
+	".webp", ".WEBP", ".svg", ".SVG",
+}
+
+// pickerKeyMap is the filepicker default, plus home/end for first and
+// last, and with esc taken off Back — esc cancels the picker instead
+// of going up a directory (h, backspace and left still do that).
+func pickerKeyMap() filepicker.KeyMap {
+	km := filepicker.DefaultKeyMap()
+	km.GoToTop = key.NewBinding(key.WithKeys("g", "home"), key.WithHelp("g", "first"))
+	km.GoToLast = key.NewBinding(key.WithKeys("G", "end"), key.WithHelp("G", "last"))
+	km.Back = key.NewBinding(key.WithKeys("h", "backspace", "left"), key.WithHelp("h", "back"))
+	return km
+}
+
+// pickerStyles paints every picker line QuickBASIC blue, with images
+// white and bold and folders just white. Non-allowed files are gray.
+func pickerStyles() filepicker.Styles {
+	st := filepicker.DefaultStyles()
+	blue := func(s lipgloss.Style) lipgloss.Style { return s.Background(qbBlue) }
+	st.Cursor = blue(lipgloss.NewStyle().Foreground(qbWhite).Bold(true))
+	st.DisabledCursor = blue(lipgloss.NewStyle().Foreground(qbGray))
+	st.Symlink = blue(lipgloss.NewStyle().Foreground(qbWhite))
+	st.Directory = blue(lipgloss.NewStyle().Foreground(qbWhite))
+	st.File = blue(lipgloss.NewStyle().Foreground(qbWhite).Bold(true))
+	st.DisabledFile = blue(lipgloss.NewStyle().Foreground(qbGray))
+	st.Permission = blue(lipgloss.NewStyle().Foreground(qbGray))
+	st.Selected = blue(lipgloss.NewStyle().Foreground(qbWhite).Bold(true))
+	st.DisabledSelected = blue(lipgloss.NewStyle().Foreground(qbGray))
+	st.FileSize = blue(lipgloss.NewStyle().Foreground(qbGray))
+	st.EmptyDirectory = blue(lipgloss.NewStyle().Foreground(qbGray))
+	return st
+}
+
+// pickerListHeight is the file list height inside the modal: the
+// modal is ~70% of the terminal, less the border, title and hint.
+func (m model) pickerListHeight() int {
+	h := m.height*70/100 - 4
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// openPicker opens the file picker modal for sending an image to
+// recipient. It starts in the home directory. Returns the picker's
+// Init command, which reads that directory.
+func (m *model) openPicker(recipient string) tea.Cmd {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	fp := filepicker.New()
+	fp.CurrentDirectory = home
+	fp.AllowedTypes = pickerImageTypes
+	fp.ShowPermissions = false
+	fp.ShowSize = true
+	fp.ShowHidden = false
+	fp.DirAllowed = false
+	fp.FileAllowed = true
+	fp.AutoHeight = false
+	fp.KeyMap = pickerKeyMap()
+	fp.Styles = pickerStyles()
+	fp.SetHeight(m.pickerListHeight())
+	m.picker = fp
+	m.picking = true
+	m.pickTo = recipient
+	m.input.Blur()
+	return fp.Init()
+}
+
+// handlePickerKey routes keys while the picker is open. Esc cancels
+// without sending; anything else goes to the picker, and a selection
+// closes the modal and starts the send.
+func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		m.picking = false
+		m.pickTo = ""
+		m.input.Focus()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.picker, cmd = m.picker.Update(msg)
+	if ok, path := m.picker.DidSelectFile(msg); ok {
+		recipient := m.pickTo
+		m.picking = false
+		m.pickTo = ""
+		m.input.Focus()
+		m.peerSendStart(recipient, path)
+		return m, nil
+	}
+	return m, cmd
+}
+
+// renderPickerModal centers the picker in a bordered box, about 70%
+// of the terminal, with a title and a key hint. The box background
+// is QuickBASIC blue, so the whole modal is blue, not just the text.
+func (m model) renderPickerModal() string {
+	if m.width < 24 || m.height < 10 {
+		return m.picker.View()
+	}
+	boxW := m.width * 70 / 100
+	inner := stylePickerTitle.Render("Send image — pick a file") + "\n" +
+		m.picker.View() +
+		stylePickerHint.Render("↑↓ move · enter open/select · h back · esc cancel")
+	box := stylePickerBox.Width(boxW - 2).Render(inner)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }

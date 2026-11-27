@@ -1,7 +1,6 @@
 // rt — RetroTerm-compatible terminal client for VSMS, in Go.
-// peer.go: peer-to-peer image RECEIVE over a WebRTC data channel.
-// This client is the receiver in v1; the JS client sends. Sending is
-// Step 2 and is not here.
+// peer.go: peer-to-peer image transfer over a WebRTC data channel.
+// This client both receives (Step 1) and sends (Step 2).
 //
 // Protocol, matching client/public/RetroTerm/script.js:
 //   - STUN stun:stun.l.google.com:19302, no TURN.
@@ -11,14 +10,18 @@
 //   - ICE candidates are RTCIceCandidateInit JSON. A candidate that
 //     arrives before setRemoteDescription is queued and flushed after
 //     (the JS flushPeerIce pattern).
+//   - The receiver accepts, never forced: an incoming file request
+//     opens a Y/n prompt ("Accept? [Y/n]", Enter is yes) with an
+//     80-second timeout, the same as the JS receiver.
 //
 // Threading: handlePeer runs on the Bubble Tea goroutine, but pion
 // callbacks (OnMessage, OnICECandidate, OnClose) run on pion
-// goroutines. The incoming map and buffers live behind peerState.mu.
-// UI lines are never written from a pion goroutine: the finish notice
-// goes through m.c.recv as an ECHO, the same path cmdWhois uses, so
-// handleIncoming prints it on the Bubble Tea goroutine. m.sendRaw is
-// safe from any goroutine (client.sendText has its own mutex).
+// goroutines. The incoming/outgoing maps and buffers live behind
+// peerState.mu. UI lines are never written from a pion goroutine:
+// notices go through m.c.recv as an ECHO, the same path cmdWhois
+// uses, so handleIncoming prints them on the Bubble Tea goroutine.
+// m.sendRaw is safe from any goroutine (client.sendText has its own
+// mutex).
 package main
 
 import (
@@ -26,24 +29,51 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pion/webrtc/v4"
 )
 
 // peerSTUN is the one ICE server, the same as the JS client.
 var peerSTUN = []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
 
-// peerState holds the in-progress incoming file transfers. It's a
-// pointer on the model so Bubble Tea's value-copy of the model still
-// shares one mutex and map.
+// peerChunkSize is the data-channel chunk size, the same as the JS
+// client's PEER_CHUNK_SIZE. peerMaxBuffered is the pause threshold,
+// the same as the JS client's 256 KB check.
+const (
+	peerChunkSize   = 16384
+	peerMaxBuffered = 256 * 1024
+)
+
+// peerPromptTimeout is the accept window for an incoming image, the
+// same as the JS receiver's PEER_ACCEPT_TIMEOUT_MS.
+const peerPromptTimeout = 80 * time.Second
+
+// peerPromptTimeoutMsg fires when an incoming-image prompt is still
+// unanswered after peerPromptTimeout. The seq guards against a stale
+// timer declining a newer prompt for the same sender.
+type peerPromptTimeoutMsg struct {
+	sender string
+	seq    int
+}
+
+// peerState holds the in-progress file transfers, both directions.
+// It's a pointer on the model so Bubble Tea's value-copy of the model
+// still shares one mutex and map.
 type peerState struct {
-	mu sync.Mutex
-	in map[string]*peerIncoming // keyed by sender, lowercased
+	mu  sync.Mutex
+	in  map[string]*peerIncoming // keyed by sender, lowercased
+	out map[string]*peerOutgoing // keyed by recipient, lowercased
 }
 
 // peerIncoming is one incoming file transfer (this client receives).
@@ -55,17 +85,47 @@ type peerIncoming struct {
 	buf        bytes.Buffer
 	pendingIce []webrtc.ICECandidateInit
 	remoteSet  bool
+	accepted   bool // true once the user answered yes to the prompt
 	done       bool
 }
 
-func newPeerState() *peerState {
-	return &peerState{in: make(map[string]*peerIncoming)}
+// peerOutgoing is one outgoing file transfer (this client sends).
+type peerOutgoing struct {
+	recipient  string // the peer's nick, as typed
+	myNick     string // our nick, captured when the transfer started
+	meta       peerFileMeta
+	data       []byte
+	pc         *webrtc.PeerConnection
+	dc         *webrtc.DataChannel
+	pendingIce []webrtc.ICECandidateInit
+	remoteSet  bool
+	done       bool
+	lastPct    int // last progress quartile printed (0, 25, 50, 75)
 }
 
-// peerFileAccept handles PEER|sender|me|file|<b64url meta>: decode the
-// meta and auto-accept (v1 has no prompt). One transfer per sender at
-// a time; a second one from the same sender is declined.
-func (m *model) peerFileAccept(sender, payload string) {
+func newPeerState() *peerState {
+	return &peerState{
+		in:  make(map[string]*peerIncoming),
+		out: make(map[string]*peerOutgoing),
+	}
+}
+
+// peerMetaInfo renders a meta as "name — size (WxH)", the dims only
+// when both are known.
+func peerMetaInfo(meta peerFileMeta) string {
+	info := fmt.Sprintf("%s — %s", meta.Name, formatSize(meta.Size))
+	if meta.Width > 0 && meta.Height > 0 {
+		info += fmt.Sprintf(" (%dx%d)", meta.Width, meta.Height)
+	}
+	return info
+}
+
+// peerFileAccept handles PEER|sender|me|file|<b64url meta>. The
+// request is NOT auto-accepted: it opens a Y/n prompt ("Accept?
+// [Y/n]", Enter is yes) with an 80-second timeout, the same as the
+// JS receiver. One prompt at a time — a second request while one is
+// pending is declined at once. Returns the timeout command, or nil.
+func (m *model) peerFileAccept(sender, payload string) tea.Cmd {
 	var meta peerFileMeta
 	if payload != "" {
 		if raw, err := base64.RawURLEncoding.DecodeString(payload); err == nil {
@@ -74,32 +134,89 @@ func (m *model) peerFileAccept(sender, payload string) {
 	}
 	if meta.Name == "" {
 		m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
-		return
+		return nil
+	}
+	if m.promptSender != "" {
+		m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
+		m.addLine(styleSys.Render("Declined image from " + sender + " (an image prompt is already pending)."))
+		return nil
 	}
 	key := strings.ToLower(sender)
 	m.peer.mu.Lock()
 	if _, exists := m.peer.in[key]; exists {
 		m.peer.mu.Unlock()
 		m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
-		return
+		return nil
 	}
 	m.peer.in[key] = &peerIncoming{sender: sender, myNick: m.myNick, meta: meta}
 	m.peer.mu.Unlock()
-	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|accept|")
-	info := fmt.Sprintf("%s — %s", meta.Name, formatSize(meta.Size))
-	if meta.Width > 0 && meta.Height > 0 {
-		info += fmt.Sprintf(" (%dx%d)", meta.Width, meta.Height)
-	}
-	m.addLine(styleSys.Render("Receiving image from " + sender + ": " + info))
+	m.promptSender = sender
+	m.promptSeq++
+	seq := m.promptSeq
+	m.addLine(styleSys.Render(sender + " wants to send an image: " + peerMetaInfo(meta)))
+	m.addLine(styleSys.Render("Accept? [Y/n]"))
+	return tea.Tick(peerPromptTimeout, func(t time.Time) tea.Msg {
+		return peerPromptTimeoutMsg{sender: sender, seq: seq}
+	})
 }
 
-// peerOffer handles PEER|sender|me|offer|<b64url SDP>. The SDP exchange
-// runs in a goroutine so the chat stays responsive.
+// peerPromptAccept answers the pending image prompt with yes: the
+// sender gets PEER|accept|, the entry is marked accepted, and the
+// rest of the receive flow (offer/answer/ICE/chunks) proceeds.
+func (m *model) peerPromptAccept() {
+	sender := m.promptSender
+	if sender == "" {
+		return
+	}
+	key := strings.ToLower(sender)
+	m.peer.mu.Lock()
+	entry, ok := m.peer.in[key]
+	if ok {
+		entry.accepted = true
+	}
+	m.peer.mu.Unlock()
+	m.promptSender = ""
+	if !ok {
+		return
+	}
+	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|accept|")
+	m.addLine(styleSys.Render("Receiving image from " + sender + ": " + peerMetaInfo(entry.meta)))
+}
+
+// peerPromptDecline answers the pending image prompt with no.
+func (m *model) peerPromptDecline() {
+	sender := m.promptSender
+	if sender == "" {
+		return
+	}
+	m.promptSender = ""
+	m.peerDrop(sender)
+	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
+	m.addLine(styleSys.Render("Declined image from " + sender + "."))
+}
+
+// peerPromptTimeout declines a prompt that is still unanswered after
+// the accept window. A stale timer (an older seq, or a prompt that
+// was already answered) does nothing.
+func (m *model) peerPromptTimeout(sender string, seq int) {
+	if m.promptSender == "" || !strings.EqualFold(m.promptSender, sender) || seq != m.promptSeq {
+		return
+	}
+	m.promptSender = ""
+	m.peerDrop(sender)
+	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
+	m.addLine(styleSys.Render("Image from " + sender + " declined (no answer)."))
+}
+
+// peerOffer handles PEER|sender|me|offer|<b64url SDP>. Only an entry
+// the user accepted proceeds — an offer for a prompt still pending
+// is ignored. The SDP exchange runs in a goroutine so the chat
+// stays responsive.
 func (m *model) peerOffer(sender, payload string) {
 	key := strings.ToLower(sender)
 	m.peer.mu.Lock()
 	entry, ok := m.peer.in[key]
-	if !ok || entry.pc != nil {
+	if !ok || entry.pc != nil || !entry.accepted {
 		m.peer.mu.Unlock()
 		return
 	}
@@ -180,7 +297,8 @@ func (m *model) peerRunOffer(entry *peerIncoming, key, payload string) {
 }
 
 // peerIce handles PEER|sender|me|ice|<b64url JSON>: add the candidate,
-// or queue it when the remote description isn't set yet.
+// or queue it when the remote description isn't set yet. Incoming
+// first, then outgoing, the same order as the JS handlePeerIce.
 func (m *model) peerIce(sender, payload string) {
 	key := strings.ToLower(sender)
 	raw, err := base64.RawURLEncoding.DecodeString(payload)
@@ -192,18 +310,28 @@ func (m *model) peerIce(sender, payload string) {
 		return
 	}
 	m.peer.mu.Lock()
-	entry, ok := m.peer.in[key]
-	if !ok {
+	if entry, ok := m.peer.in[key]; ok {
+		if entry.remoteSet && entry.pc != nil {
+			pc := entry.pc
+			m.peer.mu.Unlock()
+			pc.AddICECandidate(cand)
+			return
+		}
+		entry.pendingIce = append(entry.pendingIce, cand)
 		m.peer.mu.Unlock()
 		return
 	}
-	if entry.remoteSet && entry.pc != nil {
-		pc := entry.pc
+	if entry, ok := m.peer.out[key]; ok {
+		if entry.remoteSet && entry.pc != nil {
+			pc := entry.pc
+			m.peer.mu.Unlock()
+			pc.AddICECandidate(cand)
+			return
+		}
+		entry.pendingIce = append(entry.pendingIce, cand)
 		m.peer.mu.Unlock()
-		pc.AddICECandidate(cand)
 		return
 	}
-	entry.pendingIce = append(entry.pendingIce, cand)
 	m.peer.mu.Unlock()
 }
 
@@ -283,9 +411,9 @@ func (m *model) peerNotice(text string) {
 	m.c.recv <- chatMessage{Message: "ECHO|" + text}
 }
 
-// peerCleanup closes the peer connection (if any) and drops the entry,
-// but only if the entry in the map is still this one — a newer
-// transfer from the same sender must not be clobbered.
+// peerCleanup closes the peer connection (if any) and drops the
+// incoming entry, but only if the entry in the map is still this
+// one — a newer transfer from the same sender must not be clobbered.
 func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	var pc *webrtc.PeerConnection
 	m.peer.mu.Lock()
@@ -299,8 +427,10 @@ func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	}
 }
 
-// peerDrop ends the transfer from sender (decline or bye from the
-// peer): close the connection if any and delete the entry.
+// peerDrop ends the incoming transfer from sender (decline or bye
+// from the peer): close the connection if any and delete the entry.
+// If a prompt was pending for this sender, it is cleared and the
+// user is told the send was cancelled.
 func (m *model) peerDrop(sender string) {
 	key := strings.ToLower(sender)
 	var pc *webrtc.PeerConnection
@@ -313,4 +443,375 @@ func (m *model) peerDrop(sender string) {
 	if pc != nil {
 		pc.Close()
 	}
+	if m.promptSender != "" && strings.EqualFold(m.promptSender, sender) {
+		m.promptSender = ""
+		m.addLine(styleSys.Render("Image from " + sender + " cancelled."))
+	}
+}
+
+// peerOutDrop drops the outgoing transfer to sender by name, if
+// one exists (used when the server reports the peer unavailable).
+func (m *model) peerOutDrop(sender string) {
+	key := strings.ToLower(sender)
+	m.peer.mu.Lock()
+	entry, ok := m.peer.out[key]
+	m.peer.mu.Unlock()
+	if ok {
+		m.peerOutCleanup(key, entry)
+	}
+}
+
+// peerOutCleanup closes the peer connection (if any) and drops the
+// outgoing entry, but only if the entry in the map is still this
+// one.
+func (m *model) peerOutCleanup(key string, entry *peerOutgoing) {
+	var pc *webrtc.PeerConnection
+	m.peer.mu.Lock()
+	if cur, ok := m.peer.out[key]; ok && cur == entry {
+		delete(m.peer.out, key)
+		pc = entry.pc
+	}
+	m.peer.mu.Unlock()
+	if pc != nil {
+		pc.Close()
+	}
+}
+
+// peerDecline handles PEER|sender|me|decline|: the recipient turned
+// down our image. The outgoing entry is dropped. A decline for a
+// transfer we never started prints nothing.
+func (m *model) peerDecline(sender string) {
+	key := strings.ToLower(sender)
+	var pc *webrtc.PeerConnection
+	m.peer.mu.Lock()
+	entry, ok := m.peer.out[key]
+	if ok {
+		delete(m.peer.out, key)
+		pc = entry.pc
+	}
+	m.peer.mu.Unlock()
+	if !ok {
+		return
+	}
+	if pc != nil {
+		pc.Close()
+	}
+	m.addLine(styleSys.Render(sender + " declined your image."))
+}
+
+// peerBye handles PEER|sender|me|bye|: the peer ended the transfer.
+// Incoming is dropped (and a pending prompt for them is cleared by
+// peerDrop); outgoing is dropped with a line, the same as the JS
+// handlePeerBye.
+func (m *model) peerBye(sender string) {
+	m.peerDrop(sender)
+	key := strings.ToLower(sender)
+	var pc *webrtc.PeerConnection
+	m.peer.mu.Lock()
+	entry, ok := m.peer.out[key]
+	if ok {
+		delete(m.peer.out, key)
+		pc = entry.pc
+	}
+	m.peer.mu.Unlock()
+	if !ok {
+		return
+	}
+	if pc != nil {
+		pc.Close()
+	}
+	m.addLine(styleSys.Render("Peer connection to " + sender + " ended."))
+}
+
+// peerImageMIME maps a file extension to the MIME type the meta
+// carries. The JS receiver renders the blob with this type, so svg
+// must be image/svg+xml, not image/svg.
+var peerImageMIME = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".webp": "image/webp",
+	".svg":  "image/svg+xml",
+}
+
+var (
+	svgWidthRe   = regexp.MustCompile(`(?i)\bwidth\s*=\s*"(\d+)`)
+	svgHeightRe  = regexp.MustCompile(`(?i)\bheight\s*=\s*"(\d+)`)
+	svgViewBoxRe = regexp.MustCompile(`(?i)\bviewBox\s*=\s*"[0-9.\-]+\s+[0-9.\-]+\s+(\d+)\s+(\d+)"`)
+)
+
+// peerSVGDimensions reads width/height (or the viewBox) out of an
+// SVG's head. Only the first 4 KB can carry these attributes.
+func peerSVGDimensions(data []byte) (int, int) {
+	head := data
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	w, h := 0, 0
+	if mm := svgWidthRe.FindSubmatch(head); mm != nil {
+		w, _ = strconv.Atoi(string(mm[1]))
+	}
+	if mm := svgHeightRe.FindSubmatch(head); mm != nil {
+		h, _ = strconv.Atoi(string(mm[1]))
+	}
+	if w == 0 || h == 0 {
+		if mm := svgViewBoxRe.FindSubmatch(head); mm != nil {
+			vw, _ := strconv.Atoi(string(mm[1]))
+			vh, _ := strconv.Atoi(string(mm[2]))
+			if w == 0 {
+				w = vw
+			}
+			if h == 0 {
+				h = vh
+			}
+		}
+	}
+	return w, h
+}
+
+// peerImageDimensions returns width/height for the meta: png/jpg via
+// image.DecodeConfig, svg by parsing, and 0,0 for anything else
+// (webp included — the JS sender falls back to 0,0 the same way,
+// and the receiver tolerates it).
+func peerImageDimensions(ext string, data []byte) (int, int) {
+	switch ext {
+	case ".png", ".jpg", ".jpeg":
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return 0, 0
+		}
+		return cfg.Width, cfg.Height
+	case ".svg":
+		return peerSVGDimensions(data)
+	}
+	return 0, 0
+}
+
+// peerSendStart reads the picked file and starts an outgoing
+// transfer: the meta goes out as a PEER file request, and the
+// WebRTC offer follows when the recipient accepts. One outgoing
+// transfer per recipient at a time.
+func (m *model) peerSendStart(recipient, path string) {
+	key := strings.ToLower(recipient)
+	m.peer.mu.Lock()
+	if _, exists := m.peer.out[key]; exists {
+		m.peer.mu.Unlock()
+		m.addLine(styleErr.Render("Already sending an image to " + recipient + ". Wait for it to finish."))
+		return
+	}
+	m.peer.mu.Unlock()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		m.addLine(styleErr.Render("Could not read " + path + ": " + err.Error()))
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	mimeType, ok := peerImageMIME[ext]
+	if !ok {
+		mimeType = "image/*"
+	}
+	w, h := peerImageDimensions(ext, data)
+	meta := peerFileMeta{
+		Name:   filepath.Base(path),
+		Size:   int64(len(data)),
+		Type:   mimeType,
+		Width:  w,
+		Height: h,
+	}
+	entry := &peerOutgoing{recipient: recipient, myNick: m.myNick, meta: meta, data: data}
+	m.peer.mu.Lock()
+	if _, exists := m.peer.out[key]; exists {
+		m.peer.mu.Unlock()
+		m.addLine(styleErr.Render("Already sending an image to " + recipient + ". Wait for it to finish."))
+		return
+	}
+	m.peer.out[key] = entry
+	m.peer.mu.Unlock()
+	raw, _ := json.Marshal(meta)
+	m.sendRaw("PEER|" + m.myNick + "|" + recipient + "|file|" + base64.RawURLEncoding.EncodeToString(raw))
+	m.addLine(styleSys.Render("Waiting for " + recipient + " to accept your image (" + meta.Name + ", " + formatSize(meta.Size) + ")…"))
+}
+
+// peerAccept handles PEER|recipient|me|accept|: the recipient said
+// yes, so build the peer connection and offer, the mirror of the JS
+// handlePeerAccept.
+func (m *model) peerAccept(recipient, payload string) {
+	key := strings.ToLower(recipient)
+	m.peer.mu.Lock()
+	entry, ok := m.peer.out[key]
+	if !ok || entry.pc != nil {
+		m.peer.mu.Unlock()
+		return
+	}
+	m.peer.mu.Unlock()
+	go m.peerRunAccept(entry, key)
+}
+
+// peerRunAccept creates the peer connection and data channel, offers,
+// and sends the offer back. The data channel opens the chunk send.
+func (m *model) peerRunAccept(entry *peerOutgoing, key string) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: peerSTUN})
+	if err != nil {
+		m.peerOutCleanup(key, entry)
+		return
+	}
+	m.peer.mu.Lock()
+	if cur, ok := m.peer.out[key]; !ok || cur != entry {
+		m.peer.mu.Unlock()
+		pc.Close()
+		return
+	}
+	entry.pc = pc
+	m.peer.mu.Unlock()
+
+	dc, err := pc.CreateDataChannel("file", nil)
+	if err != nil {
+		m.peerOutCleanup(key, entry)
+		pc.Close()
+		return
+	}
+	m.peer.mu.Lock()
+	if cur, ok := m.peer.out[key]; ok && cur == entry {
+		entry.dc = dc
+	}
+	m.peer.mu.Unlock()
+	dc.OnOpen(func() {
+		go m.peerSendChunks(entry, key)
+	})
+	dc.OnClose(func() {
+		m.peerOutCleanup(key, entry)
+	})
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		raw, err := json.Marshal(c.ToJSON())
+		if err != nil {
+			return
+		}
+		m.sendRaw("PEER|" + entry.myNick + "|" + entry.recipient + "|ice|" + base64.RawURLEncoding.EncodeToString(raw))
+	})
+
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		m.peerOutCleanup(key, entry)
+		pc.Close()
+		return
+	}
+	if err := pc.SetLocalDescription(offer); err != nil {
+		m.peerOutCleanup(key, entry)
+		pc.Close()
+		return
+	}
+	m.sendRaw("PEER|" + entry.myNick + "|" + entry.recipient + "|offer|" + base64.RawURLEncoding.EncodeToString([]byte(offer.SDP)))
+	m.peerNotice("Sending image to " + entry.recipient + "…")
+}
+
+// peerAnswer handles PEER|recipient|me|answer|<b64url SDP>: set the
+// remote description and flush queued ICE, the mirror of the JS
+// handlePeerAnswer.
+func (m *model) peerAnswer(recipient, payload string) {
+	key := strings.ToLower(recipient)
+	m.peer.mu.Lock()
+	entry, ok := m.peer.out[key]
+	if !ok || entry.pc == nil {
+		m.peer.mu.Unlock()
+		return
+	}
+	m.peer.mu.Unlock()
+	go m.peerRunAnswer(entry, key, payload)
+}
+
+func (m *model) peerRunAnswer(entry *peerOutgoing, key, payload string) {
+	sdpBytes, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return
+	}
+	m.peer.mu.Lock()
+	pc := entry.pc
+	if cur, ok := m.peer.out[key]; !ok || cur != entry || pc == nil {
+		m.peer.mu.Unlock()
+		return
+	}
+	m.peer.mu.Unlock()
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: string(sdpBytes)}); err != nil {
+		return
+	}
+	m.peer.mu.Lock()
+	entry.remoteSet = true
+	queued := entry.pendingIce
+	entry.pendingIce = nil
+	m.peer.mu.Unlock()
+	for _, cand := range queued {
+		pc.AddICECandidate(cand)
+	}
+}
+
+// peerSendChunks sends the file over the open data channel in raw
+// binary 16 KB chunks, pausing when more than 256 KB is buffered,
+// the mirror of the JS sendPeerFileChunks. A 'DONE' string ends it.
+// Progress prints at each quartile; the final line prints on DONE.
+func (m *model) peerSendChunks(entry *peerOutgoing, key string) {
+	m.peer.mu.Lock()
+	if cur, ok := m.peer.out[key]; !ok || cur != entry || entry.done {
+		m.peer.mu.Unlock()
+		return
+	}
+	data := entry.data
+	total := int64(len(data))
+	dc := entry.dc
+	m.peer.mu.Unlock()
+	if dc == nil {
+		return
+	}
+	offset := int64(0)
+	for offset < total {
+		if dc.ReadyState() != webrtc.DataChannelStateOpen {
+			return
+		}
+		if dc.BufferedAmount() > peerMaxBuffered {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		end := offset + peerChunkSize
+		if end > total {
+			end = total
+		}
+		if err := dc.Send(data[offset:end]); err != nil {
+			m.peerNotice("Failed sending image to " + entry.recipient + ".")
+			m.peerOutCleanup(key, entry)
+			return
+		}
+		offset = end
+		pct := int(offset * 100 / total)
+		m.peer.mu.Lock()
+		crossed := 0
+		for _, q := range []int{25, 50, 75} {
+			if entry.lastPct < q && pct >= q {
+				crossed = q
+			}
+		}
+		if crossed > 0 {
+			entry.lastPct = crossed
+		}
+		m.peer.mu.Unlock()
+		if crossed > 0 {
+			m.peerNotice(fmt.Sprintf("Sending image to %s… %d%% (%s of %s)", entry.recipient, crossed, formatSize(offset), formatSize(total)))
+		}
+	}
+	if dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	if err := dc.SendText("DONE"); err != nil {
+		m.peerNotice("Failed sending image to " + entry.recipient + ".")
+		m.peerOutCleanup(key, entry)
+		return
+	}
+	m.peer.mu.Lock()
+	entry.done = true
+	m.peer.mu.Unlock()
+	m.peerNotice("Image sent to " + entry.recipient + " (" + formatSize(total) + ").")
+	// Give the receiver a beat to process DONE, then close.
+	time.Sleep(time.Second)
+	m.peerOutCleanup(key, entry)
 }
