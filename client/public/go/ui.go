@@ -69,6 +69,7 @@ type model struct {
 	myNick    string
 	online    []string // everyone in the room, including self
 	flags     map[string]string // nick -> flag emoji ("" = none); flagFetching = fetch in flight
+	peer      *peerState // in-progress incoming file transfers (WebRTC)
 	lines     []string // rendered message lines
 	viewport  viewport.Model
 	input     textinput.Model
@@ -142,6 +143,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		profile:   loadProfile(),
 		encLevel:  loadEncLevel(),
 		flags:     make(map[string]string),
+		peer:      newPeerState(),
 	}
 	m.addLine(styleSys.Render("Real-time connection established."))
 	m.addLine(styleSys.Render("You are now known as " + nick + "."))

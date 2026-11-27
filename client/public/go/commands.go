@@ -1217,6 +1217,10 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 // transfer and cannot receive one (no WebRTC), so a file request is
 // declined at once and the sender is told promptly instead of waiting
 // out the 80-second accept window.
+// handlePeer routes an incoming PEER message. v1 receives only: a
+// file request is auto-accepted, an offer is answered, ICE candidates
+// are added or queued, and decline/bye ends the transfer. An answer
+// (for a transfer v1 never started) is ignored — sending is Step 2.
 func (m *model) handlePeer(parts []string) {
 	// PEER|SENDER|RECIPIENT|KIND|PAYLOAD...
 	if len(parts) < 4 {
@@ -1228,26 +1232,14 @@ func (m *model) handlePeer(parts []string) {
 	if len(parts) > 4 {
 		payload = strings.Join(parts[4:], "|")
 	}
-	if kind != "file" {
-		// accept/decline/offer/answer/ice/bye for a transfer v1 never
-		// started. Nothing to do.
-		return
+	switch kind {
+	case "file":
+		m.peerFileAccept(sender, payload)
+	case "offer":
+		m.peerOffer(sender, payload)
+	case "ice":
+		m.peerIce(sender, payload)
+	case "decline", "bye":
+		m.peerDrop(sender)
 	}
-	// A file request. Decode the meta for the notice, then decline.
-	info := "an image"
-	if payload != "" {
-		if raw, err := base64.RawURLEncoding.DecodeString(payload); err == nil {
-			var meta peerFileMeta
-			if err := json.Unmarshal(raw, &meta); err == nil && meta.Name != "" {
-				dims := ""
-				if meta.Width > 0 && meta.Height > 0 {
-					dims = fmt.Sprintf(" (%dx%d)", meta.Width, meta.Height)
-				}
-				info = fmt.Sprintf("%s — %s%s", meta.Name, formatSize(meta.Size), dims)
-			}
-		}
-	}
-	m.addLine(styleSys.Render(sender + " wants to send an image: " + info))
-	m.addLine(styleSys.Render(daveMsg))
-	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|decline|")
 }
