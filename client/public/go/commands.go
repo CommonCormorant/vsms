@@ -512,23 +512,25 @@ func mailDecrypt(flag, text string) string {
 // name and the hex flag. No parens means plain mail (flag "").
 // The type is case insensitive. Empty parens "cc()", or anything
 // that isn't a known type (a typo, like "cc(garbage)"), defaults
-// to "xr" instead of failing.
-func parseMailRecipient(recipient string) (name, flag string) {
+// to "xr" instead of failing. A paren that isn't a closed type
+// suffix at the end (an unclosed "cc(x", or nothing before the
+// paren) is an error: ok is false and nothing is sent.
+func parseMailRecipient(recipient string) (name, flag string, ok bool) {
 	recipient = strings.TrimSpace(recipient)
-	if !strings.HasSuffix(recipient, ")") {
-		return recipient, ""
-	}
 	open := strings.LastIndex(recipient, "(")
 	if open < 0 {
-		return recipient, ""
+		return recipient, "", true
+	}
+	if !strings.HasSuffix(recipient, ")") || open == 0 {
+		return "", "", false
 	}
 	name = strings.TrimSpace(recipient[:open])
 	typ := strings.ToLower(strings.TrimSpace(recipient[open+1 : len(recipient)-1]))
 	switch typ {
 	case "x", "rx", "xx", "xr":
-		return name, typ
+		return name, typ, true
 	default:
-		return name, "xr"
+		return name, "xr", true
 	}
 }
 
@@ -548,8 +550,13 @@ func (m *model) cmdMail(rest string) {
 	}
 	// A parenthesised type after the name picks a hex transform:
 	// cc(x), cc(rx), cc(xx), cc(xr); cc(), or any unknown type,
-	// defaults to xr; no parens means plain mail.
-	name, flag := parseMailRecipient(recipient)
+	// defaults to xr; no parens means plain mail. An unclosed
+	// paren sends nothing and tells the sender to try again.
+	name, flag, ok := parseMailRecipient(recipient)
+	if !ok {
+		m.addLine(styleErr.Render("Try again? Unclosed enc type."))
+		return
+	}
 	if flag != "" {
 		message = mailEncrypt(flag, message)
 	}

@@ -1346,23 +1346,26 @@ async function handleMailOutCommand() {
 // else is the nickname as-is.
 function parseMailRecipient(recipient) {
     const r = String(recipient).trim();
-    if (r.endsWith(')')) {
-        const open = r.lastIndexOf('(');
-        if (open > 0) {
-            const name = r.slice(0, open).trim();
-            const type = r.slice(open + 1, -1).trim().toLowerCase();
-            const byType = {
-                'x': {flag: 'x', type: 'enc'},
-                'rx': {flag: 'rx', type: 'encr'},
-                'xx': {flag: 'xx', type: 'enc2'},
-                'xr': {flag: 'xr', type: 'encr2'}
-            };
-            // Anything else (empty parens, a typo) defaults to xr.
-            const hit = byType[type] || {flag: 'xr', type: 'encr2'};
-            return {name: name, flag: hit.flag, type: hit.type};
-        }
+    const open = r.lastIndexOf('(');
+    if (open < 0) {
+        return {name: r, flag: '', type: null};
     }
-    return {name: r, flag: '', type: null};
+    // A paren that isn't a closed type suffix at the end (an
+    // unclosed "cc(x", or nothing before the paren) is an error.
+    if (!r.endsWith(')') || open === 0) {
+        return {error: 'Try again? Unclosed enc type.'};
+    }
+    const name = r.slice(0, open).trim();
+    const type = r.slice(open + 1, -1).trim().toLowerCase();
+    const byType = {
+        'x': {flag: 'x', type: 'enc'},
+        'rx': {flag: 'rx', type: 'encr'},
+        'xx': {flag: 'xx', type: 'enc2'},
+        'xr': {flag: 'xr', type: 'encr2'}
+    };
+    // Anything else (empty parens, a typo) defaults to xr.
+    const hit = byType[type] || {flag: 'xr', type: 'encr2'};
+    return {name: name, flag: hit.flag, type: hit.type};
 }
 
 function handleMessageCommand(recipient, message) {
@@ -1371,6 +1374,10 @@ function handleMessageCommand(recipient, message) {
         return;
     }
     const parsed = parseMailRecipient(recipient);
+    if (parsed.error) {
+        addMessageToChat(parsed.error, 'error-message');
+        return;
+    }
     let outMessage = message;
     if (parsed.flag !== '') {
         outMessage = encryption[parsed.type](message);
