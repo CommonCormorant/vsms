@@ -25,3 +25,7 @@ server/serverserver/vsms-d
 
 # Build products
 server/vsms-d
+
+# rt client binary (built locally with `go build`, not tracked)
+client/public/go/rt
+client/public/go/rt-arm64
