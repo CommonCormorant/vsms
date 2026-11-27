@@ -59,7 +59,7 @@ func isSlashCommand(s string) bool {
 		"/time", "/history", "/invite", "/i", "/roll", "/flip", "/fortune",
 		"/8ball", "/uptime", "/version", "/about", "/clear", "/home",
 		"/review", "/profile", "/whois", "/flag", "/nightmode", "/darkmode",
-		"/quit", "/exit":
+		"/quit", "/exit", "/q":
 		return true
 	}
 	return false
@@ -340,7 +340,7 @@ func (m *model) handleInput(text string) tea.Cmd {
 		m.cmdFlag(rest)
 	case "/nightmode", "/darkmode":
 		m.cmdNightMode()
-	case "/quit", "/exit":
+	case "/quit", "/exit", "/q":
 		m.quitting = true
 	default:
 		m.addLine(styleErr.Render("Unknown command " + cmd + " — /help for a list."))
@@ -376,7 +376,7 @@ func (m *model) cmdHelp() {
 		"/about - about rt",
 		"/clear - clear the chat screen",
 		"/nightmode - Toggle dark/light theme.",
-		"/quit - leave",
+		"/quit, /q - leave",
 		"Tab moves to the room row, arrows pick a person, Enter opens their menu.",
 	} {
 		m.addLine(styleSys.Render("  " + l))
