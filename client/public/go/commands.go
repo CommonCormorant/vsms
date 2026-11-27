@@ -44,6 +44,21 @@ func isReviewShortcut(trimmed string) bool {
 	return err == nil
 }
 
+// isSlashCommand reports whether s is one of the client's /commands.
+// Used to tell a real command with a "?" stuck to it ("/mail?") apart
+// from a word that merely ends in "?" and is not a command.
+func isSlashCommand(s string) bool {
+	switch s {
+	case "/help", "/h", "/name", "/im", "/send", "/s", "/message", "/msg",
+		"/mail", "/me", "/emote", "/em", "/echo", "/whoami", "/alone",
+		"/time", "/history", "/invite", "/i", "/roll", "/flip", "/fortune",
+		"/8ball", "/uptime", "/version", "/about", "/clear", "/home",
+		"/review", "/profile", "/whois", "/quit", "/exit":
+		return true
+	}
+	return false
+}
+
 // fortunes and eightBall are the JS client's lists, verbatim.
 var fortunes = []string{
 	"A pleasant surprise is waiting for you.",
@@ -149,6 +164,21 @@ func (m *model) handleInput(text string) {
 	fields := strings.Fields(trimmed)
 	cmd := strings.ToLower(fields[0])
 	rest := strings.TrimSpace(trimmed[len(fields[0]):])
+	// A "?" stuck to the command ("/mail?") is the same as "/mail ?".
+	// The keyboard doesn't always put a space there, and a missing
+	// space before a punctuation-style argument changes nothing.
+	// Split the "?" off so the command matches and it becomes the
+	// argument. The same applies to any command that takes "?".
+	if strings.HasSuffix(cmd, "?") && len(cmd) > 2 {
+		if base := cmd[:len(cmd)-1]; isSlashCommand(base) {
+			if rest == "" {
+				rest = "?"
+			} else {
+				rest = "? " + rest
+			}
+			cmd = base
+		}
+	}
 	switch cmd {
 	case "/help", "/h":
 		m.cmdHelp()
@@ -591,6 +621,22 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		sender := parts[1]
 		text := strings.Join(parts[3:], "|")
 		m.addLine(styleOwn.Render("IM from " + sender + ": " + text))
+	case "MAIL":
+		// MAIL|SENDER|RECIPIENT|...CONTENT...|ENC_FLAG|READ_STATUS.
+		// Expand it like the JS client ("[Mail from cc]: ?") instead
+		// of showing the raw pipe string. The content is everything
+		// from index 3 up to the last two parts, re-joined, so a
+		// message containing | survives.
+		if len(parts) < 4 {
+			return
+		}
+		sender := parts[1]
+		end := len(parts) - 2
+		if end < 3 {
+			end = len(parts)
+		}
+		content := strings.Join(parts[3:end], "|")
+		m.addLine(styleMsg.Render("[Mail from " + sender + "]: " + content))
 	case "WELCOME":
 		if len(parts) > 1 && parts[1] != "" {
 			m.online = strings.Split(parts[1], ",")
