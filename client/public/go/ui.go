@@ -938,7 +938,16 @@ func (m model) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
-	status := fmt.Sprintf("%s · %s · %s", m.myNick, m.sessionID, m.status)
+	// The full 64-char session id makes the status line >=81 chars,
+	// which wraps at widths <=80 and pushes the frame 1 line over
+	// the terminal height — and Bubble Tea drops the top line (the
+	// live row) to fit. Show only the first 8 chars; that is enough
+	// to identify the session and keeps the status on one line.
+	sid := m.sessionID
+	if len(sid) > 8 {
+		sid = sid[:8]
+	}
+	status := fmt.Sprintf("%s · %s · %s", m.myNick, sid, m.status)
 	if m.errMsg != "" {
 		status += " · " + m.errMsg
 	}
