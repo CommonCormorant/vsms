@@ -101,6 +101,98 @@ func splitRecipient(s string) (recipient, rest string, ok bool) {
 	return recipient, rest, true
 }
 
+// toBinaryLevel rounds a level down to the nearest power of two.
+// /enc only uses binary numbers: 318 becomes 256, 100 becomes 64,
+// 200 becomes 128. The top is 512; anything higher also becomes
+// 512. 0 stays 0 (off).
+func toBinaryLevel(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	p := 1
+	for p*2 <= n && p < 512 {
+		p *= 2
+	}
+	return p
+}
+
+// parseEncLevel reads the level field of an /enc command. It returns
+// the level and true if the field IS a level (a named level or a
+// number); if the field is neither, it returns 0, false and the field
+// is the message instead. Named levels are case insensitive:
+// lo/low 32, med/medium 128, hi/high 256, default/d/def 64.
+func parseEncLevel(field string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "lo", "low":
+		return 32, true
+	case "med", "medium":
+		return 128, true
+	case "hi", "high":
+		return 256, true
+	case "default", "d", "def":
+		return 64, true
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(field)); err == nil {
+		return toBinaryLevel(n), true
+	}
+	return 0, false
+}
+
+// encKey derives the key string for a level from the session id:
+// the session id reversed, plus ":" plus the level. Both clients
+// know the session id, so the key never travels in the message.
+func encKey(sessionID string, level int) string {
+	// Reverse the session id (starting from the end).
+	runes := []rune(sessionID)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes) + ":" + strconv.Itoa(level)
+}
+
+// encEncrypt XORs the plaintext (as UTF-8 bytes) with the key stream
+// and base64url-encodes it, so it has no "|" and survives the pipe.
+func encEncrypt(plain, sessionID string, level int) string {
+	key := []byte(encKey(sessionID, level))
+	data := []byte(plain)
+	out := make([]byte, len(data))
+	for i, b := range data {
+		out[i] = b ^ key[i%len(key)]
+	}
+	return base64.RawURLEncoding.EncodeToString(out)
+}
+
+// encDecrypt reverses encEncrypt. It returns the plaintext and true,
+// or "" and false if the payload is not valid base64.
+func encDecrypt(cipherB64, sessionID string, level int) (string, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(cipherB64)
+	if err != nil {
+		return "", false
+	}
+	key := []byte(encKey(sessionID, level))
+	out := make([]byte, len(raw))
+	for i, b := range raw {
+		out[i] = b ^ key[i%len(key)]
+	}
+	return string(out), true
+}
+
+// isReservedNickname reports whether a nickname is disallowed: any
+// single character, or (case insensitive) def, default, med, medium,
+// lo, low, hi, high. These are the /enc level words, so they can
+// never be confused with a level in a command. "all" is reserved
+// separately, by the server.
+func isReservedNickname(nick string) bool {
+	if len([]rune(nick)) == 1 {
+		return true
+	}
+	switch strings.ToLower(nick) {
+	case "def", "default", "med", "medium", "lo", "low", "hi", "high":
+		return true
+	}
+	return false
+}
+
 func imID() string {
 	return fmt.Sprintf("im-%d-%d", time.Now().UnixMilli(), rand.Intn(1000000))
 }
@@ -186,6 +278,8 @@ func (m *model) handleInput(text string) {
 		m.cmdName(rest)
 	case "/im":
 		m.cmdIM(rest)
+	case "/enc", "/encrypt":
+		m.cmdEnc(rest)
 	case "/send", "/s":
 		m.cmdSend(rest)
 	case "/message", "/msg", "/mail":
@@ -249,6 +343,7 @@ func (m *model) cmdHelp() {
 		"/alone - who is in the room",
 		"/me <action> - emote",
 		"/im <who>, <message> - private message (! also works)",
+		"/enc <who>, [level,] <message> - encrypted private message (lo 32, med 128, hi 256, default 64; 0 turns auto-encryption off)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
 		"/message <who>, <message> - send mail (@ also works)",
 		"/mail ? - check for new mail",
@@ -281,6 +376,14 @@ func (m *model) cmdName(rest string) {
 		m.addLine(styleErr.Render("A nickname cannot contain , or !"))
 		return
 	}
+	// One-character nicknames and the /enc level words (def, default,
+	// med, medium, lo, low, hi, high) are reserved and can never be
+	// a nickname, so they are never confused with a level. The
+	// server enforces the same rule; this is the immediate feedback.
+	if isReservedNickname(newName) {
+		m.addLine(styleErr.Render("That nickname is reserved. Pick another one."))
+		return
+	}
 	m.sendRaw("NICK|" + m.myNick + "|" + newName)
 }
 
@@ -296,6 +399,55 @@ func (m *model) cmdIM(rest string) {
 	}
 	id := imID()
 	m.sendRaw("IM|" + m.myNick + "|" + recipient + "|" + message + "|" + id)
+	m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
+}
+
+// cmdEnc sends an encrypted IM: /enc <who>, [level,] <message>.
+// The level is a named level (lo 32, med 128, hi 256, default 64),
+// a number (rounded down to a power of two), or omitted (default 64).
+// Level 0 sends the message plain and turns auto-encryption off.
+// The level is remembered (~/retro/enclevel) like the nickname, so a
+// later /im can auto-encrypt at the same level once that lands.
+// The message goes out as a normal IM whose text is
+// "ENC:<level>:<base64>", so the server just pipes it; the receiver
+// spots the ENC: marker, decrypts with the session id, and shows it
+// green. The key never travels in the message.
+func (m *model) cmdEnc(rest string) {
+	if m.isGuest() {
+		m.addLine(styleErr.Render(`You must change your /name from "guest" to send an encrypted message.`))
+		return
+	}
+	recipient, tail, ok := splitRecipient(rest)
+	if !ok {
+		m.addLine(styleErr.Render("Usage: /enc recipient, [level,] message"))
+		return
+	}
+	// The tail is either "message" or "level, message".
+	level := 64
+	message := tail
+	if i := strings.Index(tail, ","); i >= 0 {
+		if lv, isLevel := parseEncLevel(tail[:i]); isLevel {
+			level = lv
+			message = strings.TrimSpace(tail[i+1:])
+		}
+	}
+	if message == "" {
+		m.addLine(styleErr.Render("Usage: /enc recipient, [level,] message"))
+		return
+	}
+	// Remember the level (0 = off) for a later auto-encrypting /im.
+	m.encLevel = level
+	saveEncLevel(level)
+	if level == 0 {
+		// Off: send this one plain, and auto-encryption stays off.
+		id := imID()
+		m.sendRaw("IM|" + m.myNick + "|" + recipient + "|" + message + "|" + id)
+		m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
+		return
+	}
+	cipher := encEncrypt(message, m.sessionID, level)
+	id := imID()
+	m.sendRaw("IM|" + m.myNick + "|" + recipient + "|ENC:" + strconv.Itoa(level) + ":" + cipher + "|" + id)
 	m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
 }
 
@@ -620,6 +772,21 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		}
 		sender := parts[1]
 		text := strings.Join(parts[3:], "|")
+		// An encrypted IM carries "ENC:<level>:<base64>" as its text.
+		// Decrypt it with the session id and show it like a normal
+		// IM, but green. A bad payload is shown as-is rather than
+		// dropped, so a garbled message is visible, not silent.
+		if strings.HasPrefix(text, "ENC:") {
+			rest := strings.TrimPrefix(text, "ENC:")
+			if i := strings.Index(rest, ":"); i > 0 {
+				if level, err := strconv.Atoi(rest[:i]); err == nil {
+					if plain, ok := encDecrypt(rest[i+1:], m.sessionID, level); ok {
+						m.addLine(styleEnc.Render("IM from " + sender + ": " + plain))
+						return
+					}
+				}
+			}
+		}
 		m.addLine(styleOwn.Render("IM from " + sender + ": " + text))
 	case "MAIL":
 		// MAIL|SENDER|RECIPIENT|...CONTENT...|ENC_FLAG|READ_STATUS.

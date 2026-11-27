@@ -5,6 +5,11 @@ document.body.addEventListener('dblclick', function(event) {
 const APP_STORAGE_KEY = 'retroTermAppSettings';
 window.APP_STORAGE_KEY = APP_STORAGE_KEY;
 
+// Remembered /enc level, stored apart from the settings blob so a
+// later auto-encrypting /im can read it. 0 (or a missing key) means
+// plain IMs; /enc 0 turns auto-encryption off.
+const ENC_LEVEL_KEY = 'vsmsEncLevel';
+
 const RANDOM_NAMES = [
     'Betty', 'Frank', 'Alice', 'Bob', 'Charlie', 'Diana',
     'Edward', 'Fiona', 'George', 'Helen', 'Ivan', 'Julia',
@@ -38,6 +43,7 @@ let state = {
     messageHistory: [],
     onlineUsers: [],
     use24Hour: true,
+    encLevel: 0, // remembered /enc level (0 = plain IMs)
     // Pieces of the BBS-style connection status box, collected as they
     // arrive (REGISTERED, registration complete, WELCOME) and printed as
     // one block once all three are in.
@@ -68,6 +74,8 @@ function loadSettings() {
         state.use24Hour = settings.use24Hour !== undefined ? settings.use24Hour : true;
         body.dataset.theme = state.theme;
     }
+    const savedEnc = parseInt(localStorage.getItem(ENC_LEVEL_KEY) || '0', 10);
+    state.encLevel = Number.isNaN(savedEnc) ? 0 : savedEnc;
 }
 
 function getCircledNumber(num) {
@@ -378,6 +386,21 @@ function isEmojiOnly(text) {
     }
 }
 
+// /enc level words are reserved and can never be a nickname, so they
+// are never confused with a level in a command. "all" is reserved
+// separately, by the server. The server enforces the same rule; this
+// is the immediate client-side feedback.
+function isReservedNickname(name) {
+    if ([...name].length === 1) return true;
+    switch (name.toLowerCase()) {
+        case 'def': case 'default': case 'med': case 'medium':
+        case 'lo': case 'low': case 'hi': case 'high':
+            return true;
+        default:
+            return false;
+    }
+}
+
 function handleLocalCommand(input) {
     const parts = input.slice(1).trim().split(' ');
     const command = parts[0].toLowerCase();
@@ -395,6 +418,8 @@ function handleLocalCommand(input) {
 
             if (newName.includes(',') || newName.includes('!')) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
+            } else if (isReservedNickname(newName)) {
+                addMessageToChat('That nickname is reserved. Pick another one.', 'error-message');
             } else {
                 state.baseUserName = newName;
                 const nickMessage = `NICK|${state.userName}|${newName}`;
@@ -1378,6 +1403,130 @@ const decryption = {
     xr: (text) => convertFromHex(text.split('').reverse().join(''))
 };
 
+// ---- /enc /encrypt: session-id XOR cipher, sent as an IM ----
+// This replaces the old hex/MAIL /enc for /enc and /encrypt. The old
+// hex variants (encr, enc2, ...) and the MAIL decryption above are
+// left alone, so mail encrypted the old way still reads.
+// Cipher (must match the Go rt client exactly):
+//   key string = session id reversed + ":" + level.
+//   Both sides know the session id, so the key never travels in the
+//   message; only the level does, inside the "ENC:<level>:<base64>"
+//   text of an otherwise normal IM, which the server just pipes.
+//   Level 0 = no encryption (plain).
+function encToBinaryLevel(n) {
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    let p = 1;
+    while (p * 2 <= n) p *= 2;
+    if (p > 512) p = 512;
+    return p;
+}
+
+// Parse the level field of an /enc command. Returns the level, or
+// null if the field is neither a named level nor a number (in which
+// case the field is the message). Case insensitive.
+function encParseLevel(field) {
+    const f = String(field).trim().toLowerCase();
+    switch (f) {
+        case 'lo': case 'low': return 32;
+        case 'med': case 'medium': return 128;
+        case 'hi': case 'high': return 256;
+        case 'default': case 'd': case 'def': return 64;
+        default: break;
+    }
+    if (/^\d+$/.test(f)) {
+        return encToBinaryLevel(parseInt(f, 10));
+    }
+    return null;
+}
+
+function encKeyBytes(level) {
+    const sid = getSessionId() || '';
+    const rev = sid.split('').reverse().join('');
+    return new TextEncoder().encode(rev + ':' + String(level));
+}
+
+function encBytesToBase64Url(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function encBase64UrlToBytes(s) {
+    let b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+}
+
+function encEncrypt(plain, level) {
+    const key = encKeyBytes(level);
+    const data = new TextEncoder().encode(plain);
+    const out = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i++) out[i] = data[i] ^ key[i % key.length];
+    return encBytesToBase64Url(out);
+}
+
+// Returns the plaintext string, or null if the payload will not decode.
+function encDecrypt(cipherB64, level) {
+    try {
+        const raw = encBase64UrlToBytes(cipherB64);
+        const key = encKeyBytes(level);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw[i] ^ key[i % key.length];
+        return new TextDecoder().decode(out);
+    } catch (e) {
+        return null;
+    }
+}
+
+// Green for a decrypted /enc message: dark green in day mode, normal
+// green in night mode.
+function encGreen() {
+    return state.theme === 'dark' ? '#00ff00' : '#006400';
+}
+
+// /enc <recipient>, [level,] <message>. The tail is "message" or
+// "level, message". Level 0 sends this one plain and turns
+// auto-encryption off; any other level encrypts, sends as an IM with
+// the ENC: marker, and remembers the level for a later auto-encrypting
+// /im. The sender sees their own message as plaintext, like a normal
+// sent IM.
+function handleEncCommand(recipient, tail) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to send an encrypted message.', 'error-message');
+        return;
+    }
+    let level = 64;
+    let message = tail.trim();
+    const comma = message.indexOf(',');
+    if (comma >= 0) {
+        const maybeLevel = encParseLevel(message.slice(0, comma));
+        if (maybeLevel !== null) {
+            level = maybeLevel;
+            message = message.slice(comma + 1).trim();
+        }
+    }
+    if (!message) {
+        addMessageToChat('Usage: /enc recipient, [level,] message', 'system-message');
+        return;
+    }
+    state.encLevel = level;
+    try { localStorage.setItem(ENC_LEVEL_KEY, String(level)); } catch (e) {}
+    const messageId = `im-${Date.now()}-${Math.random()}`;
+    if (level === 0) {
+        const imMessage = `IM|${state.userName}|${recipient}|${message}|${messageId}`;
+        serverApi.sendWsMessage(imMessage);
+    } else {
+        const cipher = encEncrypt(message, level);
+        const imMessage = `IM|${state.userName}|${recipient}|ENC:${level}:${cipher}|${messageId}`;
+        serverApi.sendWsMessage(imMessage);
+    }
+    const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
+    addMessageToChat(messageHtml, 'private-message', true);
+}
+
 function showHelp() {
     addMessageToChat(`Available commands:
         <br>/name [new_name] - Change your nickname (leave empty for random).
@@ -1387,6 +1536,7 @@ function showHelp() {
         <br>/alone - Check who is currently in the session.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
+        <br>/enc [recipient], [level,] [message] - Send an encrypted instant message (/encrypt also works). Levels: lo 32, med 128, hi 256, default 64; a number rounds down to a power of two (max 512); 0 turns auto-encryption off. The receiver sees it as an IM, in green.
         <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
         <br>/message [recipient], [message] - Send mail to a user (@ also works).
         <br>/message [recipient], [message] - Send mail to a user (/msg, /mail, @ also works).
@@ -1543,6 +1693,8 @@ chatForm.addEventListener('submit', async (e) => {
             const newName = state.userName + suffix;
             if (newName.includes(',') || newName.includes('!')) {
                 addMessageToChat('Nicknames cannot contain "," or "!".', 'error-message');
+            } else if (isReservedNickname(newName)) {
+                addMessageToChat('That nickname is reserved. Pick another one.', 'error-message');
             } else {
                 state.baseUserName = newName;
                 const nickMessage = `NICK|${state.userName}|${newName}`;
@@ -1673,7 +1825,20 @@ chatForm.addEventListener('submit', async (e) => {
                     addMessageToChat('Usage: /mail [?|out|recipient, message]', 'system-message');
                 }
             }
-        } else if (['enc', 'encrypt', 'encr', 'encryptr', 'enc2', 'encrypt2', 'encr2', 'encryptr2'].includes(command)) {
+        } else if (command === 'enc' || command === 'encrypt') {
+            // New /enc: session-id XOR cipher sent as an IM. The level
+            // is optional (default 64); the tail after the recipient
+            // is "level, message" or just "message".
+            const match = args.match(/^(.+?),(.+)$/s);
+            if (match) {
+                const recipient = match[1].trim();
+                const tail = match[2].trim();
+                handleEncCommand(recipient, tail);
+            } else {
+                addMessageToChat('Usage: /enc recipient, [level,] message', 'system-message');
+            }
+        } else if (['encr', 'encryptr', 'enc2', 'encrypt2', 'encr2', 'encryptr2'].includes(command)) {
+            // Older hex-obfuscation variants, sent as MAIL. Left alone.
             const match = args.match(/^(.+?),(.+)$/s);
             if (match) {
                 const recipient = match[1].trim();
@@ -1971,16 +2136,46 @@ function displayBroadcastMessage(data) {
             // parts: IM|SENDER|RECIPIENT|CONTENT|ID
             let imContent = parts[3] || '';
 
+            // New /enc payload: "ENC:<level>:<base64url>". Decrypt it
+            // with the session id and show it like a normal IM, but
+            // green. A payload that will not decrypt is shown raw
+            // rather than dropped.
+            let isEnc = false;
+            if (imContent.startsWith('ENC:')) {
+                const encRest = imContent.slice(4);
+                const colon = encRest.indexOf(':');
+                if (colon > 0) {
+                    const encLevel = parseInt(encRest.slice(0, colon), 10);
+                    if (!Number.isNaN(encLevel)) {
+                        const encPlain = encDecrypt(encRest.slice(colon + 1), encLevel);
+                        if (encPlain !== null) {
+                            imContent = encPlain;
+                            isEnc = true;
+                        }
+                    }
+                }
+            }
+
             const imResult = extractMood(imContent);
             imContent = imResult.cleanText;
             messageMood = imResult.mood;
 
-            html = `
-                <span class="timestamp">[${date}]</span>
-                <span style="color: var(--accent-color-2);">[IM from ${escapeHtml(sender)}]:</span>
-                <span class="message-content">${parseMarkdown(imContent)}</span>
-                <span class="timestamp">[${time}]</span>
-            `;
+            if (isEnc) {
+                const green = encGreen();
+                html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span style="color: ${green};">[IM from ${escapeHtml(sender)}]:</span>
+                    <span class="message-content" style="color: ${green};">${parseMarkdown(imContent)}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+            } else {
+                html = `
+                    <span class="timestamp">[${date}]</span>
+                    <span style="color: var(--accent-color-2);">[IM from ${escapeHtml(sender)}]:</span>
+                    <span class="message-content">${parseMarkdown(imContent)}</span>
+                    <span class="timestamp">[${time}]</span>
+                `;
+            }
             addMessageToChat(html, 'private-message', true, messageMood);
             return; // IMs are handled completely, so we return early.
         case 'MAIL':
@@ -2131,6 +2326,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 

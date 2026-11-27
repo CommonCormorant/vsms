@@ -86,6 +86,7 @@ type model struct {
 	startTime time.Time // session start, for /uptime
 	profile   string    // profile bio, for /profile
 	welcomed  bool      // true after the first WELCOME; later ones are silent roster resyncs
+	encLevel  int       // remembered /enc level (0 = plain IMs); /enc 0 turns auto-encryption off
 }
 
 type wsMsg struct{ cm chatMessage }
@@ -101,6 +102,7 @@ var (
 	styleSel  = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14"))
 	styleDim  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBox  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+	styleEnc  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green, for decrypted /enc messages
 )
 
 func newModel(c *client, sessionID, baseURL, nick string, early, history []chatMessage) model {
@@ -130,6 +132,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		status:    "connecting…",
 		startTime: time.Now(),
 		profile:   loadProfile(),
+		encLevel:  loadEncLevel(),
 	}
 	m.addLine(styleSys.Render("Real-time connection established."))
 	m.addLine(styleSys.Render("You are now known as " + nick + "."))

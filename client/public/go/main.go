@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,30 @@ func homeDir() string {
 
 func nickPath() string { return filepath.Join(homeDir(), "retro", "nick") }
 func imgsDir() string  { return filepath.Join(homeDir(), "retro", "imgs") }
+
+// encLevelPath is where the remembered /enc level lives, next to the
+// nickname: 0 (or a missing file) means plain IMs, any other number
+// is the level /enc last used. /enc 0 turns auto-encryption off.
+func encLevelPath() string { return filepath.Join(homeDir(), "retro", "enclevel") }
+
+func loadEncLevel() int {
+	b, err := os.ReadFile(encLevelPath())
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func saveEncLevel(n int) {
+	if err := os.MkdirAll(filepath.Dir(encLevelPath()), 0o755); err != nil {
+		return
+	}
+	os.WriteFile(encLevelPath(), []byte(strconv.Itoa(n)+"\n"), 0o644)
+}
 
 func loadNick() string {
 	b, err := os.ReadFile(nickPath())

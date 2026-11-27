@@ -137,6 +137,21 @@ func newHub() *Hub {
 	}
 }
 
+// isReservedNickname reports whether a nickname is disallowed: any
+// single character, or (case insensitive) def, default, med, medium,
+// lo, low, hi, high. These are the /enc level words, so they can
+// never be confused with a level in a command.
+func isReservedNickname(nick string) bool {
+	if len([]rune(nick)) == 1 {
+		return true
+	}
+	switch strings.ToLower(nick) {
+	case "def", "default", "med", "medium", "lo", "low", "hi", "high":
+		return true
+	}
+	return false
+}
+
 func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 	h.sessionsMutex.Lock()
 	defer h.sessionsMutex.Unlock()
@@ -156,8 +171,12 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 			}
 		}
 		// "all" is reserved: it means "everyone in the room" in /send,
-		// so it can never be a nickname.
-		if strings.EqualFold(finalNick, "all") {
+		// so it can never be a nickname. So are the /enc level words
+		// and any one-character nickname: def, default, med, medium,
+		// lo, low, hi, high (case insensitive). A reserved nickname
+		// is treated as taken, so the caller gets a suffixed name
+		// and the reserved word itself is never anyone's nickname.
+		if strings.EqualFold(finalNick, "all") || isReservedNickname(finalNick) {
 			isTaken = true
 		}
 		if isTaken {
@@ -1490,6 +1509,7 @@ func cleanupOldChatMessages() {
 		log.Printf("Cleaned up %d old chat messages", rowsAffected)
 	}
 }
+
 
 
 
