@@ -5,7 +5,8 @@
 //   out: MSG|nick|text, IM|nick|recipient|text|id,
 //        MAIL|nick|recipient|text||U, NICK|nick|newName,
 //        PEER|nick|recipient|kind|payload, PING|nick,
-//        EMOTE|nick|action, ECHO|nick|text
+//        EMOTE|nick|action, ECHO|nick|text, FLAG|nick|emoji,
+//        PROFILE|nick|bio
 //   in:  JSON ChatMessage, message field pipe-delimited the same way:
 //        MSG|sender|text, IM|sender|recipient|text,
 //        WELCOME|a,b,c, JOIN|nick, PART|nick, NICK_UPDATE|old|new,
@@ -54,7 +55,7 @@ func isSlashCommand(s string) bool {
 		"/mail", "/me", "/emote", "/em", "/echo", "/whoami", "/alone",
 		"/time", "/history", "/invite", "/i", "/roll", "/flip", "/fortune",
 		"/8ball", "/uptime", "/version", "/about", "/clear", "/home",
-		"/review", "/profile", "/whois", "/quit", "/exit":
+		"/review", "/profile", "/whois", "/flag", "/quit", "/exit":
 		return true
 	}
 	return false
@@ -331,6 +332,8 @@ func (m *model) handleInput(text string) {
 		m.cmdProfile(rest)
 	case "/whois":
 		m.cmdWhois(rest)
+	case "/flag":
+		m.cmdFlag(rest)
 	case "/quit", "/exit":
 		m.quitting = true
 	default:
@@ -345,6 +348,7 @@ func (m *model) cmdHelp() {
 		"/profile [bio] - set your profile bio (empty to view)",
 		"/whoami - your nickname and session",
 		"/whois [nick] - look up a user's info",
+		"/flag <country code, name, or emoji> - set your flag (e.g. /flag us, /flag pirate, /flag red)",
 		"/alone - who is in the room",
 		"/me <action> - emote",
 		"/im <who>, <message> - private message (! also works; auto-encrypts at your last /enc level, plain if none or 0)",
@@ -709,7 +713,163 @@ func saveProfile(bio string) {
 	os.WriteFile(profilePath(), []byte(bio+"\n"), 0o644)
 }
 
+// Named flags, written as escape sequences so the exact codepoints
+// are in the source (a pasted emoji hides its ZWJ and variation
+// selectors): 🇺🇸 US, 🇺🇲 US Minor Outlying Islands, 🚩 red, 🏴‍☠️
+// pirate, 🏳️ white, 🏴 black, 🎌 crossed flags, 🏁 chequered,
+// 🇦🇶 Antarctica, 🏳️‍🌈 rainbow, 🏳️‍⚧️ trans.
+const (
+	flagUS         = "\U0001F1FA\U0001F1F8"
+	flagUM         = "\U0001F1FA\U0001F1F2"
+	flagRed        = "\U0001F6A9"
+	flagPirate     = "\U0001F3F4\u200D\u2620\uFE0F"
+	flagWhite      = "\U0001F3F3\uFE0F"
+	flagBlack      = "\U0001F3F4"
+	flagCrossed    = "\U0001F38C"
+	flagChequered  = "\U0001F3C1"
+	flagAntarctica = "\U0001F1E6\U0001F1F6"
+	flagRainbow    = "\U0001F3F3\uFE0F\u200D\U0001F308"
+	flagTrans      = "\U0001F3F3\uFE0F\u200D\u26A7\uFE0F"
+)
+
+// resolveFlag turns a /flag argument into an emoji. Resolution is
+// case insensitive, spaces trimmed:
+//  1. Any non-ASCII character means an emoji was pasted directly —
+//     use it as-is (🇺🇸, 🦬, anything).
+//  2. Named aliases (usa, red, pirate, ...).
+//  3. Exactly two ASCII letters: an ISO country code, each letter
+//     becoming a regional indicator (gb -> 🇬🇧, jp -> 🇯🇵).
+//  4. Anything else is unknown: "" and false, nothing is sent.
+func resolveFlag(arg string) (string, bool) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", false
+	}
+	for _, r := range arg {
+		if r > 127 {
+			return arg, true
+		}
+	}
+	switch strings.ToLower(arg) {
+	case "usa", "america", "us":
+		return flagUS, true
+	case "um":
+		return flagUM, true
+	case "red":
+		return flagRed, true
+	case "pirate":
+		return flagPirate, true
+	case "white":
+		return flagWhite, true
+	case "black":
+		return flagBlack, true
+	case "jp2":
+		return flagCrossed, true
+	case "final lap", "checkered", "chequered", "finish":
+		return flagChequered, true
+	case "antarctica":
+		return flagAntarctica, true
+	case "rainbow":
+		return flagRainbow, true
+	case "trans":
+		return flagTrans, true
+	}
+	lower := strings.ToLower(arg)
+	if len(lower) == 2 && lower[0] >= 'a' && lower[0] <= 'z' && lower[1] >= 'a' && lower[1] <= 'z' {
+		// Convert to rune first: lower[0] is a byte, and 0x1F1E6
+		// overflows byte arithmetic.
+		r1 := rune(0x1F1E6) + rune(lower[0]) - 'a'
+		r2 := rune(0x1F1E6) + rune(lower[1]) - 'a'
+		return string([]rune{r1, r2}), true
+	}
+	return "", false
+}
+
+// isFlag reports whether an emoji is a recognized flag: (a) exactly
+// two regional indicator codepoints, (b) one of the named flags, or
+// (c) a GB subdivision flag (black flag + GB tag + tag letters +
+// cancel tag: England, Scotland, Wales). Anything else — 🦬, 🫂,
+// 👣 — is not a flag, and /whois labels it "Displays as:" instead
+// of "Declared nationality:".
+func isFlag(emoji string) bool {
+	runes := []rune(emoji)
+	// Exactly two regional indicators is a country flag. A
+	// two-rune string that is NOT a regional pair (the white flag
+	// 🏳️ is two runes) falls through to the named-flag check.
+	if len(runes) == 2 && runes[0] >= 0x1F1E6 && runes[0] <= 0x1F1FF &&
+		runes[1] >= 0x1F1E6 && runes[1] <= 0x1F1FF {
+		return true
+	}
+	switch emoji {
+	case flagRed, flagPirate, flagWhite, flagBlack, flagCrossed,
+		flagChequered, flagRainbow, flagTrans:
+		return true
+	}
+	// Bare white flag without its variation selector is the same flag.
+	if emoji == "\U0001F3F3" {
+		return true
+	}
+	// Subdivision flag: 🏴 + tag g + tag b + tag letters + cancel tag.
+	if len(runes) >= 5 && runes[0] == 0x1F3F4 && runes[1] == 0xE0067 &&
+		runes[2] == 0xE0062 && runes[len(runes)-1] == 0xE007F {
+		for _, r := range runes[3 : len(runes)-1] {
+			if r < 0xE0061 || r > 0xE007A {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// cmdFlag sets the sender's flag: /flag <text or emoji>. The
+// argument is resolved to an emoji and sent as FLAG|nick|emoji; the
+// server stores it and returns it in /whois. Unknown text sends
+// nothing.
+func (m *model) cmdFlag(rest string) {
+	if m.isGuest() {
+		m.addLine(styleErr.Render(`You must change your /name from "guest" to set a flag.`))
+		return
+	}
+	arg := strings.TrimSpace(rest)
+	if arg == "" {
+		m.addLine(styleErr.Render("Usage: /flag <country code, name, or emoji> — e.g. /flag us, /flag pirate, /flag red"))
+		return
+	}
+	emoji, ok := resolveFlag(arg)
+	if !ok {
+		m.addLine(styleErr.Render("I don't know that flag. Try a country code like us, or paste an emoji."))
+		return
+	}
+	m.sendRaw("FLAG|" + m.myNick + "|" + emoji)
+	m.addLine(styleSys.Render("Flag set to " + emoji))
+}
+
 // cmdWhois looks a user up via GET /api/whois and prints the result.
+// fetchFlag GETs /api/whois for nick and returns the flag emoji, or ""
+// if the user has no flag or the lookup fails. Used by the live room
+// row, so each person's flag shows next to their name.
+func fetchFlag(baseURL, sessionID, nick string) string {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	reqURL := fmt.Sprintf("%s/api/whois?sID=%s&nick=%s", baseURL, sessionID, nick)
+	resp, err := httpClient.Get(reqURL)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	var data struct {
+		Flag string `json:"flag"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return ""
+	}
+	return data.Flag
+}
+
 func (m *model) cmdWhois(rest string) {
 	target := strings.TrimSpace(rest)
 	if target == "" {
@@ -736,6 +896,7 @@ func (m *model) cmdWhois(rest string) {
 			Location     string `json:"location"`
 			MessageCount int    `json:"message_count"`
 			Profile      string `json:"profile"`
+			Flag         string `json:"flag"`
 		}
 		if err := json.Unmarshal(body, &data); err != nil {
 			m.c.recv <- chatMessage{Message: "ECHO|Could not retrieve info for " + target + "."}
@@ -744,6 +905,16 @@ func (m *model) cmdWhois(rest string) {
 		msg := fmt.Sprintf("%s first arrived %s\nFrom %s\n%s has sent %d messages", target, data.FirstArrived, data.Location, target, data.MessageCount)
 		if data.Profile != "" {
 			msg += fmt.Sprintf("\nSays, %s,\n%s", target, data.Profile)
+		}
+		// A flag rides at the bottom: a recognized flag is a
+		// declared nationality, any other emoji is just displayed.
+		// No flag set means no line at all.
+		if data.Flag != "" {
+			if isFlag(data.Flag) {
+				msg += fmt.Sprintf("\nDeclared nationality: %s", data.Flag)
+			} else {
+				msg += fmt.Sprintf("\nDisplays as: %s", data.Flag)
+			}
 		}
 		m.c.recv <- chatMessage{Message: "ECHO|" + msg}
 	}()
@@ -973,6 +1144,9 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 				}
 			}
 			m.online = kept
+			// Drop their cached flag, so a rejoin re-fetches it
+			// (they may have changed it while away).
+			delete(m.flags, nick)
 			if !quiet {
 				m.addLine(styleSys.Render("* " + nick + " has left."))
 			}
@@ -991,6 +1165,11 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 			if strings.EqualFold(n, oldNick) {
 				m.online[i] = newNick
 			}
+		}
+		// Carry their cached flag across the rename.
+		if f, ok := m.flags[oldNick]; ok {
+			delete(m.flags, oldNick)
+			m.flags[newNick] = f
 		}
 		if strings.EqualFold(oldNick, m.myNick) {
 			m.myNick = newNick

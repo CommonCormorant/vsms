@@ -63,6 +63,7 @@ type WhoisResponse struct {
 	Location     string `json:"location"`
 	MessageCount int    `json:"message_count"`
 	Profile      string `json:"profile"`
+	Flag         string `json:"flag"`
 }
 
 type GeoInfo struct {
@@ -605,6 +606,15 @@ func (c *Client) readPump() {
 				profileMessage := fmt.Sprintf("PROFILE|%s|%s", senderNick, profileText)
 				if err := storeMessage(c.sessionID, profileMessage, c.IPAddress); err != nil {
 					log.Printf("Failed to save profile: %v", err)
+				}
+			}
+
+		case "FLAG":
+			if len(msgParts) > 2 {
+				flagText := strings.Join(msgParts[2:], "|")
+				flagMessage := fmt.Sprintf("FLAG|%s|%s", senderNick, flagText)
+				if err := storeMessage(c.sessionID, flagMessage, c.IPAddress); err != nil {
+					log.Printf("Failed to save flag: %v", err)
 				}
 			}
 
@@ -1167,6 +1177,21 @@ func whoisHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get flag (latest FLAG message, if any)
+	flagLike := fmt.Sprintf("FLAG|%s|%%", nick)
+	var flagMessage string
+	err = db.QueryRow("SELECT message FROM chat_messages WHERE message LIKE ? ORDER BY created_at DESC LIMIT 1", flagLike).Scan(&flagMessage)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "Database error getting flag", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
+		parts := strings.SplitN(flagMessage, "|", 3)
+		if len(parts) >= 3 {
+			response.Flag = parts[2]
+		}
+	}
+
 	// Get location from IP
 	response.Location, err = getGeoFromIP(ipAddress)
 	if err != nil {
@@ -1531,6 +1556,7 @@ func cleanupOldChatMessages() {
 		log.Printf("Cleaned up %d old chat messages", rowsAffected)
 	}
 }
+
 
 
 

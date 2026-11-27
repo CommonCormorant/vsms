@@ -44,6 +44,7 @@ let state = {
     onlineUsers: [],
     use24Hour: true,
     encLevel: 0, // remembered /enc level (0 = plain IMs)
+    flagCache: {}, // room bar: lowercase nick -> flag string, '' when none, null while fetching
     // Pieces of the BBS-style connection status box, collected as they
     // arrive (REGISTERED, registration complete, WELCOME) and printed as
     // one block once all three are in.
@@ -302,6 +303,25 @@ function roomDropdownItems(nick) {
     ];
 }
 
+// Room-bar flags: fetched once per nick per session via /whois and
+// cached in state.flagCache ('' when the person has none or the fetch
+// failed, null while one is in flight). A fetch that returns
+// re-renders the bar so the flag appears; a failed one just leaves
+// the black circle.
+function fetchRoomFlag(nick) {
+    const key = nick.toLowerCase();
+    if (state.flagCache[key] !== undefined) return;
+    state.flagCache[key] = null;
+    serverApi.getWhois(nick)
+        .then(data => {
+            state.flagCache[key] = data.flag || '';
+            renderRoomStatusBar();
+        })
+        .catch(() => {
+            state.flagCache[key] = '';
+        });
+}
+
 function renderRoomStatusBar() {
     const bar = document.getElementById('room-statusbar');
     if (!bar) return;
@@ -318,6 +338,12 @@ function renderRoomStatusBar() {
     bar.innerHTML = others.map(nick => {
         const safe = escapeHtml(nick);
         const open = roomStatusOpenNick !== null && roomStatusOpenNick.toLowerCase() === nick.toLowerCase();
+        // The person's flag, or the black circle when they have none
+        // (or the /whois fetch hasn't come back yet). The fetch runs
+        // once per nick; its return re-renders the bar.
+        if (state.flagCache[nick.toLowerCase()] === undefined) fetchRoomFlag(nick);
+        const flag = state.flagCache[nick.toLowerCase()];
+        const flagEmoji = flag ? flag : '⚫';
         let dropdown = '';
         if (open) {
             const items = roomDropdownItems(nick).map(item => {
@@ -326,7 +352,10 @@ function renderRoomStatusBar() {
             }).join('');
             dropdown = `<div class="room-dropdown">${items}</div>`;
         }
-        return `<span class="room-person-wrap"><a class="room-person" data-nick="${safe}">${safe}</a>${dropdown}</span>`;
+        // The emoji sits inside the link so the whole "nick emoji" is
+        // clickable, but as an inline-block it takes no underline from
+        // the link (an inline span would still be underlined).
+        return `<span class="room-person-wrap"><a class="room-person" data-nick="${safe}">${safe} <span style="display:inline-block;text-decoration:none">${escapeHtml(flagEmoji)}</span></a>${dropdown}</span>`;
     }).join('');
 }
 
@@ -399,6 +428,83 @@ function isReservedNickname(name) {
         default:
             return false;
     }
+}
+
+// /flag: text and emoji names resolved to a flag emoji. The emoji are
+// written as escapes so the ZWJ / variation-selector sequences survive
+// editing intact (US flag, US Minor Outlying Islands flag, red flag,
+// pirate flag, white flag, black flag, crossed flags, chequered flag,
+// Antarctica flag, rainbow flag, trans flag).
+const FLAG_ALIASES = {
+    'usa': '\u{1F1FA}\u{1F1F8}',
+    'america': '\u{1F1FA}\u{1F1F8}',
+    'us': '\u{1F1FA}\u{1F1F8}',
+    'um': '\u{1F1FA}\u{1F1F2}',
+    'red': '\u{1F6A9}',
+    'pirate': '\u{1F3F4}\u200D\u2620\uFE0F',
+    'white': '\u{1F3F3}\uFE0F',
+    'black': '\u{1F3F4}',
+    'jp2': '\u{1F38C}',
+    'final lap': '\u{1F3C1}',
+    'checkered': '\u{1F3C1}',
+    'chequered': '\u{1F3C1}',
+    'finish': '\u{1F3C1}',
+    'antarctica': '\u{1F1E6}\u{1F1F6}',
+    'rainbow': '\u{1F3F3}\uFE0F\u200D\uD83C\uDF08',
+    'trans': '\u{1F3F3}\uFE0F\u200D\u26A7\uFE0F'
+};
+
+// The named flags, for isFlag.
+const NAMED_FLAGS = [
+    '\u{1F6A9}', // red flag
+    '\u{1F3F4}', // black flag
+    '\u{1F3F3}\uFE0F', // white flag
+    '\u{1F3C1}', // chequered flag
+    '\u{1F38C}', // crossed flags
+    '\u{1F3F4}\u200D\u2620\uFE0F', // pirate flag
+    '\u{1F3F3}\uFE0F\u200D\uD83C\uDF08', // rainbow flag
+    '\u{1F3F3}\uFE0F\u200D\u26A7\uFE0F' // trans flag
+];
+
+// Resolve a /flag argument to a flag emoji, or null when it isn't one.
+// Case-insensitive; spaces trimmed. A pasted emoji is used as-is, a
+// known name maps through FLAG_ALIASES, and two ASCII letters are an
+// ISO country code (each letter becomes a regional indicator).
+function resolveFlag(arg) {
+    const text = String(arg).trim();
+    if (!text) return null;
+    if (/[^\x00-\x7F]/.test(text)) return text;
+    const key = text.toLowerCase();
+    if (FLAG_ALIASES[key]) return FLAG_ALIASES[key];
+    if (/^[a-z]{2}$/.test(key)) {
+        return String.fromCodePoint(
+            0x1F1E6 + (key.charCodeAt(0) - 97),
+            0x1F1E6 + (key.charCodeAt(1) - 97));
+    }
+    return null;
+}
+
+// True when the emoji is a recognised flag: a pair of regional
+// indicators (a country flag), one of the named flags, or a
+// subdivision flag (black flag + tag sequence + cancel tag, e.g.
+// England / Scotland / Wales). Any other emoji is not a flag.
+function isFlag(emoji) {
+    if (!emoji) return false;
+    const cps = [...emoji];
+    if (cps.length === 2) {
+        const a = cps[0].codePointAt(0);
+        const b = cps[1].codePointAt(0);
+        if (a >= 0x1F1E6 && a <= 0x1F1FF && b >= 0x1F1E6 && b <= 0x1F1FF) return true;
+    }
+    if (NAMED_FLAGS.includes(emoji)) return true;
+    if (cps.length >= 3 && cps[0].codePointAt(0) === 0x1F3F4 &&
+            cps[cps.length - 1].codePointAt(0) === 0xE007F) {
+        return cps.slice(1, -1).every(cp => {
+            const v = cp.codePointAt(0);
+            return v >= 0xE0020 && v <= 0xE007E;
+        });
+    }
+    return false;
 }
 
 function handleLocalCommand(input) {
@@ -503,6 +609,19 @@ function handleLocalCommand(input) {
                 addMessageToChat('No profile set. Usage: /profile [your bio]', 'system-message');
             }
             break;
+        case 'flag':
+            if (state.userName.startsWith('guest')) {
+                addMessageToChat('You must change your /name from "guest" to set a flag.', 'error-message');
+                return;
+            }
+            const flag = resolveFlag(args);
+            if (!flag) {
+                addMessageToChat("I don't know that flag. Try a country code like us, or paste an emoji.", 'error-message');
+                return;
+            }
+            serverApi.sendWsMessage(`FLAG|${state.userName}|${flag}`);
+            addMessageToChat(`Flag set to ${escapeHtml(flag)}.`, 'system-message');
+            break;
         case 'whois':
             if (args) {
                 const targetName = args.trim();
@@ -511,6 +630,10 @@ function handleLocalCommand(input) {
                         let whoisMessage = `${escapeHtml(targetName)} first arrived ${data.first_arrived}<br>`;
                         whoisMessage += `From ${escapeHtml(data.location)}<br>`;
                         whoisMessage += `${escapeHtml(targetName)} has sent ${data.message_count} messages<br>`;
+                        if (data.flag) {
+                            const flagLabel = isFlag(data.flag) ? 'Declared nationality' : 'Displays as';
+                            whoisMessage += `${flagLabel}: ${escapeHtml(data.flag)}<br>`;
+                        }
                         if (data.profile) {
                             whoisMessage += `Says, ${escapeHtml(targetName)},<br>${escapeHtml(data.profile)}`;
                         }
@@ -1575,6 +1698,7 @@ function showHelp() {
     addMessageToChat(`Available commands:
         <br>/name [new_name] - Change your nickname (leave empty for random).
         <br>/profile [bio] - Set your profile bio (leave empty to view).
+        <br>/flag [text or emoji] - Set the flag on your profile, shown in /whois and the room bar. Country codes (us, gb, aq) and names (usa, red, pirate, white, black, jp2, final lap, rainbow, trans) work, or paste an emoji.
         <br>/whoami - Display your current user info.
         <br>/whois [nickname] - Look up a user's info.
         <br>/alone - Check who is currently in the session.

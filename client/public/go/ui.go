@@ -68,6 +68,7 @@ type model struct {
 	baseURL   string
 	myNick    string
 	online    []string // everyone in the room, including self
+	flags     map[string]string // nick -> flag emoji ("" = none); flagFetching = fetch in flight
 	lines     []string // rendered message lines
 	viewport  viewport.Model
 	input     textinput.Model
@@ -92,6 +93,13 @@ type model struct {
 type wsMsg struct{ cm chatMessage }
 type wsErr struct{ err error }
 type tickMsg time.Time
+
+// flagFetching marks a nick whose /whois flag fetch is in flight, so a
+// second roster change doesn't re-fetch it before the first returns.
+const flagFetching = "\x00fetching"
+
+// flagsMsg carries the /whois flags fetched for the live room row.
+type flagsMsg struct{ flags map[string]string }
 
 var (
 	styleMsg  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // bright green
@@ -133,6 +141,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		startTime: time.Now(),
 		profile:   loadProfile(),
 		encLevel:  loadEncLevel(),
+		flags:     make(map[string]string),
 	}
 	m.addLine(styleSys.Render("Real-time connection established."))
 	m.addLine(styleSys.Render("You are now known as " + nick + "."))
@@ -304,9 +313,51 @@ func (m model) others() []string {
 	return out
 }
 
+// roomFlag returns the emoji to show after name in the live row: the
+// person's flag, or the black circle when they have none or the fetch
+// hasn't returned yet.
+func (m model) roomFlag(name string) string {
+	if f, ok := m.flags[name]; ok && f != "" && f != flagFetching {
+		return f
+	}
+	return "⚫"
+}
+
+// fetchRoomFlags returns a Cmd that fetches /whois flags for every
+// room member not yet in m.flags. Nicks are pre-marked as fetching so
+// a second roster change while one is in flight doesn't re-fetch
+// them. Returns nil when there is nothing to fetch.
+func (m *model) fetchRoomFlags() tea.Cmd {
+	var todo []string
+	for _, n := range m.online {
+		if strings.EqualFold(n, m.myNick) {
+			continue
+		}
+		if _, ok := m.flags[n]; ok {
+			continue
+		}
+		m.flags[n] = flagFetching
+		todo = append(todo, n)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	baseURL, sessionID := m.baseURL, m.sessionID
+	return func() tea.Msg {
+		out := make(map[string]string)
+		for _, nick := range todo {
+			out[nick] = fetchFlag(baseURL, sessionID, nick)
+		}
+		return flagsMsg{flags: out}
+	}
+}
+
 // renderLiveRow builds the top row and records the click span of every
 // name. The row is line 0 of the view, so a mouse click at y=0 maps
-// straight onto these spans.
+// straight onto these spans. Each name is followed by the person's
+// flag (black circle when they have none); the span covers the name
+// and the flag, so clicking either opens the dropdown, the same as
+// the JS status bar.
 func (m *model) renderLiveRow() string {
 	others := m.others()
 	var b strings.Builder
@@ -318,14 +369,17 @@ func (m *model) renderLiveRow() string {
 		return b.String()
 	}
 	for i, name := range others {
+		flag := m.roomFlag(name)
 		x0 := x
-		w := utf8.RuneCountInString(name)
+		w := utf8.RuneCountInString(name) + 1 + lipgloss.Width(flag)
 		x1 := x0 + w
 		m.spans = append(m.spans, nameSpan{name: name, x0: x0, x1: x1})
 		if m.focus == focusRow && i == m.rowSel {
-			b.WriteString(styleSel.Render(name))
+			b.WriteString(styleSel.Render(name + " " + flag))
 		} else {
 			b.WriteString(styleName.Render(name))
+			b.WriteString(" ")
+			b.WriteString(flag)
 		}
 		x = x1 + 1
 		if i < len(others)-1 {
@@ -436,6 +490,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsMsg:
 		m.handleIncoming(msg.cm, false)
+		// The roster may have changed; fetch flags for anyone new.
+		return m, m.fetchRoomFlags()
+
+	case flagsMsg:
+		for nick, flag := range msg.flags {
+			m.flags[nick] = flag
+		}
 		return m, nil
 
 	case wsErr:
