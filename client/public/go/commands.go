@@ -347,10 +347,10 @@ func (m *model) cmdHelp() {
 		"/whois [nick] - look up a user's info",
 		"/alone - who is in the room",
 		"/me <action> - emote",
-		"/im <who>, <message> - private message (! also works)",
+		"/im <who>, <message> - private message (! also works; auto-encrypts at your last /enc level, plain if none or 0)",
 		"/enc <who>, [level,] <message> - encrypted private message (lo 32, med 128, hi 256, default 64; 0 turns auto-encryption off)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
-		"/message <who>, <message> - send mail (@ also works; /mail cc(x), msg for hex, cc(rx), cc(xx), cc(xr); cc() or any unknown type defaults to xr)",
+		"/message <who>, <message> - send mail (@ also works; defaults to xx hex; cc(x), cc(rx), cc(xr) pick a type; (-) sends plain and warns you)",
 		"/mail ? - check for new mail",
 		"/invite - shareable link to this room",
 		"/history [minutes] - fetch server history (default 15, max 90)",
@@ -392,6 +392,11 @@ func (m *model) cmdName(rest string) {
 	m.sendRaw("NICK|" + m.myNick + "|" + newName)
 }
 
+// cmdIM sends a private message. It auto-encrypts at the level most
+// recently used with /enc (m.encLevel, remembered like the
+// nickname). No stored level, or a stored 0, means plain, exactly
+// as before. An encrypted IM goes out with the ENC: marker and the
+// receiver shows it green; the sender still sees their own text.
 func (m *model) cmdIM(rest string) {
 	if m.isGuest() {
 		m.addLine(styleErr.Render(`You must change your /name from "guest" to send an IM.`))
@@ -403,6 +408,12 @@ func (m *model) cmdIM(rest string) {
 		return
 	}
 	id := imID()
+	if m.encLevel != 0 {
+		cipher := encEncrypt(message, m.sessionID, m.encLevel)
+		m.sendRaw("IM|" + m.myNick + "|" + recipient + "|ENC:" + strconv.Itoa(m.encLevel) + ":" + cipher + "|" + id)
+		m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
+		return
+	}
 	m.sendRaw("IM|" + m.myNick + "|" + recipient + "|" + message + "|" + id)
 	m.addLine(styleOwn.Render("IM->" + recipient + " " + message))
 }
@@ -509,28 +520,32 @@ func mailDecrypt(flag, text string) string {
 }
 
 // parseMailRecipient splits a mail recipient like "cc(x)" into the
-// name and the hex flag. No parens means plain mail (flag "").
-// The type is case insensitive. Empty parens "cc()", or anything
-// that isn't a known type (a typo, like "cc(garbage)"), defaults
-// to "xr" instead of failing. A paren that isn't a closed type
-// suffix at the end (an unclosed "cc(x", or nothing before the
-// paren) is an error: ok is false and nothing is sent.
-func parseMailRecipient(recipient string) (name, flag string, ok bool) {
+// name and the hex flag. The type is case insensitive. No parens,
+// empty parens "cc()", or anything that isn't a known type (a typo,
+// like "cc(garbage)") all default to "xx" — mail is hex-encoded
+// unless the sender explicitly opts out. Only "(-)" sends plain
+// mail (flag ""), and it sets warn so the sender is told the mail
+// went out unencoded. A paren that isn't a closed type suffix at
+// the end (an unclosed "cc(x", or nothing before the paren) is an
+// error: ok is false and nothing is sent.
+func parseMailRecipient(recipient string) (name, flag string, warn bool, ok bool) {
 	recipient = strings.TrimSpace(recipient)
 	open := strings.LastIndex(recipient, "(")
 	if open < 0 {
-		return recipient, "", true
+		return recipient, "xx", false, true
 	}
 	if !strings.HasSuffix(recipient, ")") || open == 0 {
-		return "", "", false
+		return "", "", false, false
 	}
 	name = strings.TrimSpace(recipient[:open])
 	typ := strings.ToLower(strings.TrimSpace(recipient[open+1 : len(recipient)-1]))
 	switch typ {
 	case "x", "rx", "xx", "xr":
-		return name, typ, true
+		return name, typ, false, true
+	case "-":
+		return name, "", true, true
 	default:
-		return name, "xr", true
+		return name, "xx", false, true
 	}
 }
 
@@ -549,10 +564,12 @@ func (m *model) cmdMail(rest string) {
 		return
 	}
 	// A parenthesised type after the name picks a hex transform:
-	// cc(x), cc(rx), cc(xx), cc(xr); cc(), or any unknown type,
-	// defaults to xr; no parens means plain mail. An unclosed
-	// paren sends nothing and tells the sender to try again.
-	name, flag, ok := parseMailRecipient(recipient)
+	// cc(x), cc(rx), cc(xx), cc(xr). No parens, cc(), or any
+	// unknown type all default to xx — mail is hex-encoded unless
+	// the sender opts out with (-), which sends plain and warns
+	// them. An unclosed paren sends nothing and tells the sender
+	// to try again.
+	name, flag, warn, ok := parseMailRecipient(recipient)
 	if !ok {
 		m.addLine(styleErr.Render("Try again? Unclosed enc type."))
 		return
@@ -563,6 +580,9 @@ func (m *model) cmdMail(rest string) {
 	// The trailing |flag|U is the JS client's mail format; the flag
 	// is empty for plain mail.
 	m.sendRaw("MAIL|" + m.myNick + "|" + name + "|" + message + "|" + flag + "|U")
+	if warn {
+		m.addLine(styleErr.Render("You just sent an unencoded email. This is *not* recommended."))
+	}
 }
 
 // cmdSend is the image macro. Picking Image in the dropdown composes

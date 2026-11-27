@@ -702,8 +702,19 @@ function handleImCommand(recipient, message) {
     }
     const messageId = `im-${Date.now()}-${Math.random()}`;
 
-    // CHANGE THIS: Send pipe-delimited instead of JSON
-    const imMessage = `IM|${state.userName}|${recipient}|${message}|${messageId}`;
+    // Auto-encrypt at the level most recently used with /enc
+    // (state.encLevel, remembered like the nickname). No stored
+    // level, or a stored 0, means plain, exactly as before.
+    // An encrypted IM goes out with the ENC: marker and the
+    // receiver shows it green; the sender still sees their own
+    // text.
+    let imMessage;
+    if (state.encLevel) {
+        const cipher = encEncrypt(message, state.encLevel);
+        imMessage = `IM|${state.userName}|${recipient}|ENC:${state.encLevel}:${cipher}|${messageId}`;
+    } else {
+        imMessage = `IM|${state.userName}|${recipient}|${message}|${messageId}`;
+    }
     serverApi.sendWsMessage(imMessage); // ← Send as plain string, not JSON
 
     const messageHtml = `<span id="${messageId}"><b>IM-&gt;${escapeHtml(recipient)}</b> ${escapeHtml(message)}</span>`;
@@ -1348,7 +1359,10 @@ function parseMailRecipient(recipient) {
     const r = String(recipient).trim();
     const open = r.lastIndexOf('(');
     if (open < 0) {
-        return {name: r, flag: '', type: null};
+        // No parens at all: mail defaults to xx hex, so no
+        // unencrypted mail ever goes out unless the sender opts
+        // out with (-).
+        return {name: r, flag: 'xx', type: 'enc2'};
     }
     // A paren that isn't a closed type suffix at the end (an
     // unclosed "cc(x", or nothing before the paren) is an error.
@@ -1357,14 +1371,19 @@ function parseMailRecipient(recipient) {
     }
     const name = r.slice(0, open).trim();
     const type = r.slice(open + 1, -1).trim().toLowerCase();
+    // Only (-) sends plain mail (empty flag), and the sender is
+    // warned after it goes out. Everything else that isn't a
+    // known type (empty parens, a typo) defaults to xx.
+    if (type === '-') {
+        return {name: name, flag: '', type: null, warn: true};
+    }
     const byType = {
         'x': {flag: 'x', type: 'enc'},
         'rx': {flag: 'rx', type: 'encr'},
         'xx': {flag: 'xx', type: 'enc2'},
         'xr': {flag: 'xr', type: 'encr2'}
     };
-    // Anything else (empty parens, a typo) defaults to xr.
-    const hit = byType[type] || {flag: 'xr', type: 'encr2'};
+    const hit = byType[type] || {flag: 'xx', type: 'enc2'};
     return {name: name, flag: hit.flag, type: hit.type};
 }
 
@@ -1384,6 +1403,9 @@ function handleMessageCommand(recipient, message) {
     }
     const mailMessage = `MAIL|${state.userName}|${parsed.name}|${outMessage}|${parsed.flag}|U`;
     serverApi.sendWsMessage(mailMessage);
+    if (parsed.warn) {
+        addMessageToChat('You just sent an unencoded email. This is *not* recommended.', 'error-message');
+    }
 }
 
 function convertToHex(text) {
@@ -1557,10 +1579,10 @@ function showHelp() {
         <br>/whois [nickname] - Look up a user's info.
         <br>/alone - Check who is currently in the session.
         <br>/me [action] - Roleplay emote (/emote, /em, or : also work).
-        <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
+        <br>/im [recipient], [message] - Send an instant message to an online user (! also works). Auto-encrypts at your last /enc level; plain if none or 0.
         <br>/enc [recipient], [level,] [message] - Send an encrypted instant message (/encrypt also works). Levels: lo 32, med 128, hi 256, default 64; a number rounds down to a power of two (max 512); 0 turns auto-encryption off. The receiver sees it as an IM, in green.
         <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
-        <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Add a hex type to the recipient to obfuscate it: (x) hex, (rx) reverse-then-hex, (xx) double hex, (xr) hex-then-reverse; () or any unknown type defaults to xr. Example: /mail cc(xr), hello
+        <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Mail defaults to xx double hex; (x) hex, (rx) reverse-then-hex, (xr) hex-then-reverse pick a type, () or any unknown type is xx. Only (-) sends plain, and it warns you. Example: /mail cc, hello
         <br>/mail ? - Check for new mail (@? also works).
         <br>/invite - Get a shareable link to this chat session (/i, + also work).
         <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).
@@ -2336,6 +2358,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 
