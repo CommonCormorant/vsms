@@ -1,6 +1,6 @@
 module retroTerm-go
 
-go 1.27.4
+go 1.24.2
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
