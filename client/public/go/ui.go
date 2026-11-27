@@ -24,7 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -70,7 +70,7 @@ type model struct {
 	online    []string // everyone in the room, including self
 	lines     []string // rendered message lines
 	viewport  viewport.Model
-	input     textarea.Model
+	input     textinput.Model
 	width     int
 	height    int
 	focus     int
@@ -104,22 +104,16 @@ var (
 )
 
 func newModel(c *client, sessionID, baseURL, nick string, early, history []chatMessage) model {
-	// A textarea, not a textinput, so a message wraps onto the next
-	// line when it hits the right edge instead of scrolling off it
-	// and looking cut off. Enter submits (InsertNewline disabled);
-	// the height grows with the wrapped lines, up to 5.
-	ta := textarea.New()
-	ta.Prompt = "> "
-	ta.Placeholder = "type a message, /help for commands"
-	ta.CharLimit = 2000
-	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetEnabled(false)
-	ta.Focus()
-	// Keep the input text green like the old textinput.
-	ta.FocusedStyle.Text = styleMsg
-	ta.FocusedStyle.Prompt = styleMsg
-	ta.BlurredStyle.Text = styleMsg
-	ta.BlurredStyle.Prompt = styleMsg
+	// Single-line input, like the JS client: it starts on one line
+	// and scrolls left/right as you type past the edge. The input
+	// is NOT where wrapping belongs — the output/chat area is.
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.Placeholder = "type a message, /help for commands"
+	ti.CharLimit = 2000
+	ti.Focus()
+	ti.PromptStyle = styleMsg
+	ti.TextStyle = styleMsg
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -130,7 +124,7 @@ func newModel(c *client, sessionID, baseURL, nick string, early, history []chatM
 		baseURL:   baseURL,
 		myNick:    nick,
 		viewport:  vp,
-		input:     ta,
+		input:     ti,
 		focus:     focusInput,
 		rowSel:    0,
 		status:    "connecting…",
@@ -171,37 +165,100 @@ func tickHeartbeat() tea.Cmd {
 // layout recomputes the viewport height and input width from the
 // window size and whether the dropdown is open.
 func (m *model) layout() {
-	m.viewport.Width = m.width
-	// The textarea's width is the terminal width minus the "> " prompt.
-	w := m.width - len(m.input.Prompt) - 1
-	if w < 10 {
-		w = 10
-	}
-	m.input.SetWidth(w)
-	m.syncInputHeight()
-}
-
-// syncInputHeight grows the textarea with its wrapped lines (1..5)
-// and gives the rest of the screen to the viewport.
-func (m *model) syncInputHeight() {
-	h := m.input.LineCount()
-	if h < 1 {
-		h = 1
-	}
-	if h > 5 {
-		h = 5
-	}
-	m.input.SetHeight(h)
-	// Lines taken: live row 1, dropdown ddHeight or 0, input h, status 1.
-	used := 1 + h + 1
+	// Lines taken: live row 1, dropdown ddHeight or 0, input 1, status 1.
+	used := 1 + 1 + 1
 	if m.ddOpen {
 		used += ddHeight
 	}
-	vh := m.height - used
-	if vh < 1 {
-		vh = 1
+	h := m.height - used
+	if h < 1 {
+		h = 1
 	}
-	m.viewport.Height = vh
+	m.viewport.Height = h
+	m.viewport.Width = m.width
+	m.input.Width = m.width - len(m.input.Prompt) - 1
+	if m.input.Width < 10 {
+		m.input.Width = 10
+	}
+}
+
+// wrapOutput wraps a rendered output line to the viewport width.
+// It wraps at word boundaries first (wordwrap, with breakpoints
+// added for URL characters so a long link breaks at / ? = & .),
+// then hard-breaks any line that is STILL too long — a long
+// unbroken token like a hex session id has no breakpoint at all,
+// and without the hard break it runs off the right edge of the
+// screen and is invisible unless the user shrinks the terminal.
+// The hard break is ANSI-aware: escape sequences are copied
+// through without counting toward the width or being split.
+func wrapOutput(s string, w int) string {
+	ww := wordwrap.NewWriter(w)
+	ww.Breakpoints = []rune{'-', '/', '?', '=', '&', '.', '_', ':', '#'}
+	ww.KeepNewlines = true
+	ww.Write([]byte(s))
+	ww.Close()
+	var out []string
+	for _, ln := range strings.Split(ww.String(), "\n") {
+		out = append(out, hardWrapLine(ln, w)...)
+	}
+	return strings.Join(out, "\n")
+}
+
+// hardWrapLine splits a single line into width-sized chunks, counting
+// only printable runes (ANSI escape sequences pass through whole).
+// A line that already fits is returned untouched.
+func hardWrapLine(s string, w int) []string {
+	if w < 1 {
+		return []string{s}
+	}
+	// Fast path: measure the printable width.
+	printable := 0
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if (r >= '@' && r <= '~') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		printable++
+	}
+	if printable <= w {
+		return []string{s}
+	}
+	var lines []string
+	var cur strings.Builder
+	count := 0
+	inEsc = false
+	for _, r := range s {
+		if inEsc {
+			cur.WriteRune(r)
+			if r >= '@' && r <= '~' {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			cur.WriteRune(r)
+			continue
+		}
+		if count >= w {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			count = 0
+		}
+		cur.WriteRune(r)
+		count++
+	}
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
+	}
+	return lines
 }
 
 // addLine appends a rendered line and keeps the viewport pinned to the
@@ -215,9 +272,7 @@ func (m *model) addLine(s string) {
 	if w < 1 {
 		w = 80
 	}
-	// wordwrap is ANSI-aware, so styled lines keep their colour across
-	// the wrap. A line that fits is left untouched.
-	for _, ln := range strings.Split(wordwrap.String(s, w), "\n") {
+	for _, ln := range strings.Split(wrapOutput(s, w), "\n") {
 		m.lines = append(m.lines, ln)
 	}
 	m.viewport.SetContent(strings.Join(m.lines, "\n"))
@@ -355,7 +410,6 @@ func (m *model) pickDropdown() {
 	}
 	m.input.SetValue(text)
 	m.input.CursorEnd()
-	m.syncInputHeight()
 	m.closeDropdown()
 }
 
@@ -441,24 +495,19 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Click anywhere else: the input block sits right above the
-	// status line, at 1 + (dropdown ? 7 : 0) + viewport height, and
-	// is inputHeight lines tall (it wraps). A tap on any of its lines
+	// Click anywhere else: the input line is right above the status
+	// line, at 1 + (dropdown ? 7 : 0) + viewport height. A tap on it
 	// focuses the input so the phone keyboard comes back; a tap on
 	// the messages blurs it so the keyboard dismisses and the user
 	// can read. Either way the dropdown closes.
-	inputTop := 1 + m.viewport.Height
+	inputY := 1 + m.viewport.Height
 	if m.ddOpen {
-		inputTop += ddHeight
-	}
-	inputH := m.input.LineCount()
-	if inputH < 1 {
-		inputH = 1
+		inputY += ddHeight
 	}
 	if m.ddOpen {
 		m.closeDropdown()
 	}
-	if y >= inputTop && y < inputTop+inputH {
+	if y == inputY {
 		m.focus = focusInput
 		m.input.Focus()
 	} else {
@@ -527,7 +576,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			text := m.input.Value()
 			m.input.SetValue("")
-			m.syncInputHeight()
 			if strings.TrimSpace(text) == "" {
 				return m, nil
 			}
@@ -542,12 +590,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Anything else goes to the input. After it updates, the wrapped
-	// line count may have changed, so re-sync the input height (and
-	// the viewport with it) before the next render.
+	// Anything else goes to the input.
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.syncInputHeight()
 	return m, cmd
 }
 
