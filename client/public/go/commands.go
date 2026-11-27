@@ -853,13 +853,25 @@ func isFlag(emoji string) bool {
 // server stores it and returns it in /whois. Unknown text sends
 // nothing.
 func (m *model) cmdFlag(rest string) {
-	if m.isGuest() {
-		m.addLine(styleErr.Render(`You must change your /name from "guest" to set a flag.`))
-		return
-	}
 	arg := strings.TrimSpace(rest)
 	if arg == "" {
-		m.addLine(styleErr.Render("Usage: /flag <country code, name, or emoji> — e.g. /flag us, /flag pirate, /flag red"))
+		// Bare /flag reads the flag back from the server (the
+		// flag lives server-side): show it if one is set, else
+		// usage. The fetch runs in the background like /whois,
+		// reusing fetchFlag, and the result comes back as ECHO.
+		baseURL, sessionID, nick := m.baseURL, m.sessionID, m.myNick
+		go func() {
+			flag := fetchFlag(baseURL, sessionID, nick)
+			if flag != "" {
+				m.c.recv <- chatMessage{Message: "ECHO|Your flag: " + flag}
+			} else {
+				m.c.recv <- chatMessage{Message: "ECHO|No flag set. Usage: /flag <country code or emoji> — e.g. /flag us, or paste an emoji."}
+			}
+		}()
+		return
+	}
+	if m.isGuest() {
+		m.addLine(styleErr.Render(`You must change your /name from "guest" to set a flag.`))
 		return
 	}
 	emoji, ok := resolveFlag(arg)

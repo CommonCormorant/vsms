@@ -530,6 +530,23 @@ function showWhois(targetName) {
         });
 }
 
+// showOwnFlag fetches the server-side whois for the user's own
+// nickname and prints just the flag (or usage if none is set).
+// Used by /flag with no arguments.
+function showOwnFlag() {
+    serverApi.getWhois(state.userName)
+        .then(data => {
+            if (data.flag) {
+                addMessageToChat(`Your flag: ${escapeHtml(data.flag)}`, 'system-message');
+            } else {
+                addMessageToChat('No flag set. Usage: /flag [country code or emoji] — e.g. /flag us, or paste an emoji.', 'system-message');
+            }
+        })
+        .catch(error => {
+            addMessageToChat(`Could not retrieve your flag. ${error.message}`, 'error-message');
+        });
+}
+
 function handleLocalCommand(input) {
     const parts = input.slice(1).trim().split(' ');
     const command = parts[0].toLowerCase();
@@ -631,6 +648,11 @@ function handleLocalCommand(input) {
             addMessageToChat(`Profile updated for ${escapeHtml(state.userName)}.`, 'system-message');
             break;
         case 'flag':
+            if (!args.trim()) {
+                // Bare /flag: read the flag back from the server.
+                showOwnFlag();
+                break;
+            }
             if (state.userName.startsWith('guest')) {
                 addMessageToChat('You must change your /name from "guest" to set a flag.', 'error-message');
                 return;
