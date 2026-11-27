@@ -537,3 +537,84 @@ p.mood-thoughtful { border-left: 4px solid #6B3A5A !important; padding-left: 8px
 p.mood-warm       { border-left: 4px solid #B89EE8 !important; padding-left: 8px; }
 p.mood-playful    { border-left: 4px solid #FF6EC7 !important; padding-left: 8px; }
 p.mood-intense    { border-left: 4px solid #C44B6B !important; padding-left: 8px; }
+
+/* Room status bar: pinned to the top of the RetroTerm view. It is the
+   first flex child of #app-container, so it stays put while #chat-output
+   scrolls. Names are links; clicking one opens the action dropdown. */
+#room-statusbar {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--input-border);
+    background-color: var(--container-bg);
+    font-family: var(--font-family-mono);
+    font-size: 0.9rem;
+    min-height: 2.25rem;
+}
+
+#room-statusbar .room-alone {
+    color: var(--system-color);
+    font-style: italic;
+}
+
+.room-person-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.room-person {
+    color: var(--button-bg);
+    text-decoration: underline;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.room-person:hover {
+    color: var(--button-hover-bg);
+}
+
+.room-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    min-width: 240px;
+    margin-top: 4px;
+    background-color: var(--container-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    padding: 4px;
+}
+
+.room-dropdown-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    font-family: var(--font-family-mono);
+    font-size: 0.9rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.room-dropdown-item:hover {
+    background-color: var(--input-bg);
+}
+
+.room-dropdown-sep {
+    padding: 0.3rem 0.6rem;
+    color: var(--system-color);
+    font-size: 0.85rem;
+    text-align: center;
+    border-top: 1px solid var(--input-border);
+    border-bottom: 1px solid var(--input-border);
+    margin: 4px 0;
+}

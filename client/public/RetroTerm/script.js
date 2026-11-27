@@ -258,6 +258,108 @@ function tryPrintStatusBox() {
     addMessageToChat(buildStatusBox(), 'system-message status-box');
 }
 
+
+// Room status bar: the people currently in the room, each name a link.
+// Clicking a name opens a dropdown of things you can do with that person.
+// Picking an item only COMPOSES the command text into the input box, as
+// if you had typed it — nothing is sent until you push Send.
+//   Private/instant message -> !Name,
+//   Mail/message            -> @Name,
+//   Image                   -> >Name, image
+// Audio-only and video calls have no command yet (no call code exists —
+// the peer ladder is images now, voice/video later), so they are not in
+// the dropdown.
+// The bar stays live: it re-renders on every WELCOME / JOIN / PART /
+// NICK_UPDATE, so a join appears without a refresh and a name never
+// lingers after its person has left.
+let roomStatusOpenNick = null;
+
+function otherRoomUsers() {
+    return state.onlineUsers.filter(u => u.toLowerCase() !== state.userName.toLowerCase());
+}
+
+function composeRoomCommand(text) {
+    chatInput.value = text;
+    chatInput.focus();
+    const len = chatInput.value.length;
+    try { chatInput.setSelectionRange(len, len); } catch (e) { /* older browsers */ }
+}
+
+function roomDropdownItems(nick) {
+    return [
+        { label: `Private/instant message to ${nick}`, text: `!${nick}, ` },
+        { label: `Mail/message to ${nick}`, text: `@${nick}, ` },
+        { sep: '- Peer-to-peer -' },
+        { label: `Image to ${nick}`, text: `>${nick}, image` },
+    ];
+}
+
+function renderRoomStatusBar() {
+    const bar = document.getElementById('room-statusbar');
+    if (!bar) return;
+    const others = otherRoomUsers();
+    // If the person whose dropdown is open has left, close it.
+    if (roomStatusOpenNick !== null && !others.some(u => u.toLowerCase() === roomStatusOpenNick.toLowerCase())) {
+        roomStatusOpenNick = null;
+    }
+    if (others.length === 0) {
+        roomStatusOpenNick = null;
+        bar.innerHTML = '<span class="room-alone">Just you</span>';
+        return;
+    }
+    bar.innerHTML = others.map(nick => {
+        const safe = escapeHtml(nick);
+        const open = roomStatusOpenNick !== null && roomStatusOpenNick.toLowerCase() === nick.toLowerCase();
+        let dropdown = '';
+        if (open) {
+            const items = roomDropdownItems(nick).map(item => {
+                if (item.sep) return `<div class="room-dropdown-sep">${escapeHtml(item.sep)}</div>`;
+                return `<button type="button" class="room-dropdown-item" data-command="${escapeHtml(item.text)}">${escapeHtml(item.label)}</button>`;
+            }).join('');
+            dropdown = `<div class="room-dropdown">${items}</div>`;
+        }
+        return `<span class="room-person-wrap"><a class="room-person" data-nick="${safe}">${safe}</a>${dropdown}</span>`;
+    }).join('');
+}
+
+function onRoomStatusBarClick(event) {
+    const item = event.target.closest('.room-dropdown-item');
+    if (item) {
+        composeRoomCommand(item.dataset.command);
+        roomStatusOpenNick = null;
+        renderRoomStatusBar();
+        event.stopPropagation();
+        return;
+    }
+    const person = event.target.closest('.room-person');
+    if (person) {
+        const nick = person.dataset.nick;
+        roomStatusOpenNick = (roomStatusOpenNick !== null && roomStatusOpenNick.toLowerCase() === nick.toLowerCase()) ? null : nick;
+        renderRoomStatusBar();
+        event.stopPropagation();
+        return;
+    }
+}
+
+// Wire the bar once (this script runs at the end of <body>, so the bar
+// element already exists). Clicks elsewhere or Escape close the dropdown.
+const roomStatusBarEl = document.getElementById('room-statusbar');
+if (roomStatusBarEl) {
+    roomStatusBarEl.addEventListener('click', onRoomStatusBarClick);
+}
+document.addEventListener('click', () => {
+    if (roomStatusOpenNick !== null) {
+        roomStatusOpenNick = null;
+        renderRoomStatusBar();
+    }
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && roomStatusOpenNick !== null) {
+        roomStatusOpenNick = null;
+        renderRoomStatusBar();
+    }
+});
+
 function isRetroTheme() {
     return ['dark', 'hercules-orange', 'hercules-green', 'retroled', 'crt', 'crt-light'].includes(state.theme);
 }
@@ -1772,6 +1874,7 @@ function displayBroadcastMessage(data) {
         const escapedUsers = state.onlineUsers.map(u => escapeHtml(u));
         state.statusBox.online = escapedUsers;
         tryPrintStatusBox();
+        renderRoomStatusBar();
         return;
     }
 
@@ -1794,6 +1897,7 @@ function displayBroadcastMessage(data) {
         if (userIndex !== -1) {
             state.onlineUsers[userIndex] = rawNewNick;
         }
+        renderRoomStatusBar();
         return;
     }
 
@@ -1814,6 +1918,7 @@ function displayBroadcastMessage(data) {
             state.onlineUsers = state.onlineUsers.filter(u => u.toLowerCase() !== rawUser.toLowerCase());
             addMessageToChat(`* ${user} has left.`, 'system-message');
         }
+        renderRoomStatusBar();
         return;
     }
 
@@ -1991,6 +2096,7 @@ function displayBroadcastMessage(data) {
 
 async function initializeApp() {
     loadSettings();
+    renderRoomStatusBar();
     populateReactionWidget();
     addMessageToChat('Welcome to RetroTerm.', 'system-message');
     addMessageToChat('Connecting to server...', 'system-message');
@@ -2025,6 +2131,7 @@ async function initializeApp() {
 }
 
 window.addEventListener('load', initializeApp);
+
 
 
 
