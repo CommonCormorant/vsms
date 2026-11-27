@@ -1352,17 +1352,14 @@ function parseMailRecipient(recipient) {
             const name = r.slice(0, open).trim();
             const type = r.slice(open + 1, -1).trim().toLowerCase();
             const byType = {
-                '': {flag: 'xr', type: 'encr2'},
                 'x': {flag: 'x', type: 'enc'},
                 'rx': {flag: 'rx', type: 'encr'},
                 'xx': {flag: 'xx', type: 'enc2'},
                 'xr': {flag: 'xr', type: 'encr2'}
             };
-            const hit = byType[type];
-            if (hit) {
-                return {name: name, flag: hit.flag, type: hit.type};
-            }
-            return {error: 'Unknown mail type. Use (x), (rx), (xx), (xr), or () for xr.'};
+            // Anything else (empty parens, a typo) defaults to xr.
+            const hit = byType[type] || {flag: 'xr', type: 'encr2'};
+            return {name: name, flag: hit.flag, type: hit.type};
         }
     }
     return {name: r, flag: '', type: null};
@@ -1374,10 +1371,6 @@ function handleMessageCommand(recipient, message) {
         return;
     }
     const parsed = parseMailRecipient(recipient);
-    if (parsed.error) {
-        addMessageToChat(parsed.error, 'error-message');
-        return;
-    }
     let outMessage = message;
     if (parsed.flag !== '') {
         outMessage = encryption[parsed.type](message);
@@ -1560,7 +1553,7 @@ function showHelp() {
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works).
         <br>/enc [recipient], [level,] [message] - Send an encrypted instant message (/encrypt also works). Levels: lo 32, med 128, hi 256, default 64; a number rounds down to a power of two (max 512); 0 turns auto-encryption off. The receiver sees it as an IM, in green.
         <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
-        <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Add a hex type to the recipient to obfuscate it: (x) hex, (rx) reverse-then-hex, (xx) double hex, (xr) hex-then-reverse, () for xr. Example: /mail cc(xr), hello
+        <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Add a hex type to the recipient to obfuscate it: (x) hex, (rx) reverse-then-hex, (xx) double hex, (xr) hex-then-reverse; () or any unknown type defaults to xr. Example: /mail cc(xr), hello
         <br>/mail ? - Check for new mail (@? also works).
         <br>/invite - Get a shareable link to this chat session (/i, + also work).
         <br>/history [minutes] - Fetch server history (default: 15, max: 90). (/h also works).

@@ -350,7 +350,7 @@ func (m *model) cmdHelp() {
 		"/im <who>, <message> - private message (! also works)",
 		"/enc <who>, [level,] <message> - encrypted private message (lo 32, med 128, hi 256, default 64; 0 turns auto-encryption off)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
-		"/message <who>, <message> - send mail (@ also works; /mail cc(x), msg for hex, cc(rx), cc(xx), cc(xr), or cc() for xr)",
+		"/message <who>, <message> - send mail (@ also works; /mail cc(x), msg for hex, cc(rx), cc(xx), cc(xr); cc() or any unknown type defaults to xr)",
 		"/mail ? - check for new mail",
 		"/invite - shareable link to this room",
 		"/history [minutes] - fetch server history (default 15, max 90)",
@@ -510,26 +510,26 @@ func mailDecrypt(flag, text string) string {
 
 // parseMailRecipient splits a mail recipient like "cc(x)" into the
 // name and the hex flag. No parens means plain mail (flag "").
-// Empty parens "cc()" default to "xr". The type is case
-// insensitive. An unknown type is an error.
-func parseMailRecipient(recipient string) (name, flag string, ok bool) {
+// The type is case insensitive. Empty parens "cc()", or anything
+// that isn't a known type (a typo, like "cc(garbage)"), defaults
+// to "xr" instead of failing.
+func parseMailRecipient(recipient string) (name, flag string) {
 	recipient = strings.TrimSpace(recipient)
 	if !strings.HasSuffix(recipient, ")") {
-		return recipient, "", true
+		return recipient, ""
 	}
 	open := strings.LastIndex(recipient, "(")
 	if open < 0 {
-		return recipient, "", true
+		return recipient, ""
 	}
 	name = strings.TrimSpace(recipient[:open])
 	typ := strings.ToLower(strings.TrimSpace(recipient[open+1 : len(recipient)-1]))
 	switch typ {
-	case "":
-		return name, "xr", true
 	case "x", "rx", "xx", "xr":
-		return name, typ, true
+		return name, typ
+	default:
+		return name, "xr"
 	}
-	return "", "", false
 }
 
 func (m *model) cmdMail(rest string) {
@@ -547,13 +547,9 @@ func (m *model) cmdMail(rest string) {
 		return
 	}
 	// A parenthesised type after the name picks a hex transform:
-	// cc(x), cc(rx), cc(xx), cc(xr); cc() defaults to xr; no
-	// parens means plain mail.
-	name, flag, ok := parseMailRecipient(recipient)
-	if !ok {
-		m.addLine(styleErr.Render("Unknown mail type. Use (x), (rx), (xx), (xr), or () for xr."))
-		return
-	}
+	// cc(x), cc(rx), cc(xx), cc(xr); cc(), or any unknown type,
+	// defaults to xr; no parens means plain mail.
+	name, flag := parseMailRecipient(recipient)
 	if flag != "" {
 		message = mailEncrypt(flag, message)
 	}
