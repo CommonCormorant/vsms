@@ -1,4 +1,4 @@
-module rt
+module retroTerm-go
 
 go 1.27.4
 
