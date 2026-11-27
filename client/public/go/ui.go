@@ -339,12 +339,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		m.layout()
-		// A resize is also how the phone tells us the keyboard was
-		// shown or hidden. Keep the input focused so the keyboard
-		// comes back instead of being forgotten.
-		if m.focus == focusInput {
-			m.input.Focus()
-		}
+		// Do NOT re-focus here. A resize is also how the phone tells
+		// us the keyboard was shown or hidden, and re-focusing on
+		// every resize pops the keyboard straight back up after the
+		// user dismissed it. Focus is controlled by taps, below.
 		return m, nil
 
 	case tickMsg:
@@ -416,14 +414,23 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Click anywhere else closes the dropdown and puts the focus back
-	// on the input, so a tap brings the phone keyboard back instead
-	// of leaving it forgotten after it was minimized.
+	// Click anywhere else: the input line is right above the status
+	// line, at 1 + (dropdown ? 7 : 0) + viewport height. A tap on it
+	// focuses the input so the phone keyboard comes back; a tap on
+	// the messages blurs it so the keyboard dismisses and the user
+	// can read. Either way the dropdown closes.
+	inputY := 1 + m.viewport.Height
+	if m.ddOpen {
+		inputY += ddHeight
+	}
 	if m.ddOpen {
 		m.closeDropdown()
-	} else {
+	}
+	if y == inputY {
 		m.focus = focusInput
 		m.input.Focus()
+	} else {
+		m.input.Blur()
 	}
 	return m, nil
 }
