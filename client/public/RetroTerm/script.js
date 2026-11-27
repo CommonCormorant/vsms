@@ -1408,11 +1408,12 @@ const decryption = {
 // hex variants (encr, enc2, ...) and the MAIL decryption above are
 // left alone, so mail encrypted the old way still reads.
 // Cipher (must match the Go rt client exactly):
-//   key string = session id reversed + ":" + level.
-//   Both sides know the session id, so the key never travels in the
-//   message; only the level does, inside the "ENC:<level>:<base64>"
-//   text of an otherwise normal IM, which the server just pipes.
-//   Level 0 = no encryption (plain).
+//   key string = level + ":" + session id reversed. The level goes
+//   first so it matters even for a short message; the reversed
+//   session id is the salt. Both sides know the session id, so the
+//   key never travels in the message; only the level does, inside
+//   the "ENC:<level>:<base64>" text of an otherwise normal IM,
+//   which the server just pipes. Level 0 = no encryption (plain).
 function encToBinaryLevel(n) {
     if (!Number.isFinite(n) || n <= 0) return 0;
     let p = 1;
@@ -1442,7 +1443,9 @@ function encParseLevel(field) {
 function encKeyBytes(level) {
     const sid = getSessionId() || '';
     const rev = sid.split('').reverse().join('');
-    return new TextEncoder().encode(rev + ':' + String(level));
+    // Level FIRST, then the reversed session id as the salt, so the
+    // level matters even for a short message.
+    return new TextEncoder().encode(String(level) + ':' + rev);
 }
 
 function encBytesToBase64Url(bytes) {

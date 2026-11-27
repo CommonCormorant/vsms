@@ -139,15 +139,19 @@ func parseEncLevel(field string) (int, bool) {
 }
 
 // encKey derives the key string for a level from the session id:
-// the session id reversed, plus ":" plus the level. Both clients
-// know the session id, so the key never travels in the message.
+// the level, plus ":" plus the session id reversed. The level goes
+// FIRST so it matters even for a short message (the session id is
+// 64 chars, so a level after it would never be reached by a message
+// under 64 bytes). The session id is the salt; the level is the part
+// that varies. Both clients know the session id, so the key never
+// travels in the message.
 func encKey(sessionID string, level int) string {
 	// Reverse the session id (starting from the end).
 	runes := []rune(sessionID)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
 		runes[i], runes[j] = runes[j], runes[i]
 	}
-	return string(runes) + ":" + strconv.Itoa(level)
+	return strconv.Itoa(level) + ":" + string(runes)
 }
 
 // encEncrypt XORs the plaintext (as UTF-8 bytes) with the key stream
