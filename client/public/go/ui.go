@@ -852,6 +852,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default: // focusInput
+		// Recovery from the stuck state: handleMouse blurs the
+		// input when the user taps the messages (to dismiss the
+		// phone keyboard), but it leaves m.focus on focusInput, so
+		// a blurred input silently swallows keystrokes and the user
+		// cannot type at all — the client's one job. Any printable
+		// key, or Enter, refocuses first, so the keystroke lands in
+		// the input instead of being lost. Tab, arrows, pgup/pgdown
+		// and esc keep their current meaning and do not refocus.
+		if !m.input.Focused() && (msg.Type == tea.KeyRunes || msg.Type == tea.KeyEnter) {
+			m.input.Focus()
+		}
 		// A pending image prompt answers y/n (or Enter for yes,
 		// the default) when the input is empty, so a keypress
 		// never eats a letter the user is typing into a message.
