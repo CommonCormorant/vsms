@@ -550,7 +550,12 @@ func (m *model) handleIncoming(cm chatMessage, quiet bool) {
 		} else {
 			m.online = nil
 		}
-		if !quiet {
+		// The server re-broadcasts WELCOME every 30s as a roster
+		// resync. Only print the "* Online" line the first time;
+		// later ones just update the list silently or the chat would
+		// fill with a roster line every 30 seconds.
+		if !quiet && !m.welcomed {
+			m.welcomed = true
 			if len(m.online) == 0 {
 				m.addLine(styleSys.Render("* Online: just you."))
 			} else {

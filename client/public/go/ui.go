@@ -85,6 +85,7 @@ type model struct {
 	ready     bool
 	startTime time.Time // session start, for /uptime
 	profile   string    // profile bio, for /profile
+	welcomed  bool      // true after the first WELCOME; later ones are silent roster resyncs
 }
 
 type wsMsg struct{ cm chatMessage }

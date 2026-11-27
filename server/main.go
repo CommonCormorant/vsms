@@ -169,8 +169,50 @@ func (h *Hub) getAvailableNickname(sessionID, requestedNick string) string {
 }
 
 func (h *Hub) run() {
+	// Periodic roster resync: every 30s broadcast the current online
+	// list (as WELCOME) to every session, so a client that missed a
+	// JOIN/PART/NICK_UPDATE — or whose list went stale for any reason —
+	// heals within 30s instead of showing "Just you" while people are
+	// in the room. WELCOME is reused because both clients already
+	// handle it by replacing their online list and re-rendering the
+	// room bar; the JS status box prints only once, and the Go client
+	// only prints "* Online" on the first WELCOME.
+	rosterTicker := time.NewTicker(30 * time.Second)
+	defer rosterTicker.Stop()
 	for {
 		select {
+		case <-rosterTicker.C:
+			h.sessionsMutex.Lock()
+			type roster struct {
+				sessionID string
+				clients   []*Client
+				online    []string
+			}
+			var rosters []roster
+			for sessionID, session := range h.sessions {
+				r := roster{sessionID: sessionID}
+				for _, c := range session {
+					r.clients = append(r.clients, c)
+					if c.Nickname != "" {
+						r.online = append(r.online, c.Nickname)
+					}
+				}
+				rosters = append(rosters, r)
+			}
+			h.sessionsMutex.Unlock()
+			for _, r := range rosters {
+				msg, _ := json.Marshal(ChatMessage{
+					SessionID: r.sessionID,
+					Message:   "WELCOME|" + strings.Join(r.online, ","),
+					Timestamp: time.Now(),
+				})
+				for _, c := range r.clients {
+					select {
+					case c.send <- msg:
+					default:
+					}
+				}
+			}
 		case client := <-h.register:
 			h.sessionsMutex.Lock()
 			// Get the list of current users before adding the new one.
@@ -1448,5 +1490,6 @@ func cleanupOldChatMessages() {
 		log.Printf("Cleaned up %d old chat messages", rowsAffected)
 	}
 }
+
 
 
