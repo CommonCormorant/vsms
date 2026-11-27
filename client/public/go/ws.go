@@ -118,6 +118,21 @@ func (c *client) close() {
 	c.conn.Close()
 }
 
+// originFor returns the Origin header for a ws:// or wss:// URL: the
+// http(s) scheme plus the host. The browser sends the page origin
+// automatically; a Go client must send it explicitly.
+func originFor(wsURL string) string {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return ""
+	}
+	scheme := "https"
+	if u.Scheme == "ws" {
+		scheme = "http"
+	}
+	return scheme + "://" + u.Host
+}
+
 // connect dials the WS endpoint, runs the handshake, registers nick, and
 // returns the client, the final nickname the server assigned, and any
 // chat messages that arrived early (WELCOME can land before REGISTERED).
@@ -132,7 +147,14 @@ func connect(wsURL, nick string) (*client, string, []chatMessage, error) {
 		HandshakeTimeout: 30 * time.Second,
 		Proxy:            http.ProxyFromEnvironment,
 	}
-	conn, _, err := dialer.Dial(wsURL, nil)
+	// The server's CheckOrigin requires an Origin header from the
+	// VSMS domain. Without it the server answers 403 Forbidden and
+	// the dial fails as "websocket: bad handshake".
+	hdr := http.Header{}
+	if origin := originFor(wsURL); origin != "" {
+		hdr.Set("Origin", origin)
+	}
+	conn, _, err := dialer.Dial(wsURL, hdr)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("dial %s: %w", wsURL, err)
 	}
