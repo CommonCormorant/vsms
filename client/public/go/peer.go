@@ -635,6 +635,18 @@ func (m *model) peerBye(sender string) {
 	m.addLine(styleSys.Render("Peer connection to " + sender + " ended."))
 }
 
+// peerCallAutoDecline handles PEER|sender|me|call|: a JS client is
+// ringing this Go client for a phone call. The Go client has no
+// audio, so it can never take a call: decline it at once (so the
+// caller stops ringing) and IM the caller to say why, so they are
+// not left wondering. The IM is plain, not encrypted — it is a
+// system notice, and the caller must be able to read it as-is.
+func (m *model) peerCallAutoDecline(sender string) {
+	m.sendRaw("PEER|" + m.myNick + "|" + sender + "|call-decline|")
+	m.sendRaw("IM|" + m.myNick + "|" + sender + "|I'm using an incompatible client, your request was automatically declined.|" + imID())
+	m.addLine(styleSys.Render(sender + " tried to call — automatically declined (this client has no audio)."))
+}
+
 // peerImageMIME maps a file extension to the MIME type the meta
 // carries. The JS receiver renders the blob with this type, so svg
 // must be image/svg+xml, not image/svg.

@@ -1302,6 +1302,11 @@ func (m *model) handlePeer(parts []string) tea.Cmd {
 		m.peerDecline(sender)
 	case "bye":
 		m.peerBye(sender)
+	case "call":
+		// A JS client is ringing this Go client. The Go client has
+		// no audio, so it can never take a call: auto-decline it and
+		// tell the caller why, in an IM, so they are not left ringing.
+		m.peerCallAutoDecline(sender)
 	}
 	return nil
 }
