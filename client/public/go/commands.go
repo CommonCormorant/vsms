@@ -628,7 +628,7 @@ func (m *model) cmdMail(rest string) {
 func (m *model) cmdPhone(rest string) {
 	m.addLine(styleSys.Render("Phone calls require audio."))
 	m.addLine(styleSys.Render("I don't have audio."))
-	m.addLine(styleSys.Render("I'd totally do this if I did, tho."))
+	m.addLine(renderInline("I'd **totally** do this if I did, tho.", styleSys))
 }
 
 // cmdSend is the image macro. Picking Image in the dropdown composes
