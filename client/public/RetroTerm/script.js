@@ -275,9 +275,12 @@ function tryPrintStatusBox() {
 //   Private/instant message -> !Name,
 //   Mail/message            -> @Name,
 //   Image                   -> >Name, image
-// Audio-only and video calls have no command yet (no call code exists —
-// the peer ladder is images now, voice/video later), so they are not in
-// the dropdown.
+//   Phone call              -> /phone Name (a real peer-to-peer audio
+//                              call now exists, so it is in the dropdown;
+//                              video calls still have no code and are not)
+// While a call is live, the other party shows at the front of the bar
+// with a talking indicator — ➡️ you are talking, ⬅️ they are talking,
+// 📱 quiet — and tapping it hangs up.
 // The bar stays live: it re-renders on every WELCOME / JOIN / PART /
 // NICK_UPDATE, so a join appears without a refresh and a name never
 // lingers after its person has left.
@@ -300,6 +303,7 @@ function roomDropdownItems(nick) {
         { label: `Mail/message to ${nick}`, text: `@${nick}, ` },
         { sep: '- Peer-to-peer -' },
         { label: `Image to ${nick}`, text: `>${nick}, image` },
+        { label: `Call ${nick}`, text: `/phone ${nick}` },
     ];
 }
 
@@ -330,12 +334,25 @@ function renderRoomStatusBar() {
     if (roomStatusOpenNick !== null && !others.some(u => u.toLowerCase() === roomStatusOpenNick.toLowerCase())) {
         roomStatusOpenNick = null;
     }
+    // Call indicator: while a call is live, the other party shows at
+    // the front of the bar with the talking indicator — ➡️ you are
+    // talking, ⬅️ they are talking, 📱 quiet — and tapping it hangs
+    // up. No stylesheet for the bar lives in this file, so the
+    // pointer cursor is inline.
+    let callHtml = '';
+    if (callState.status === 'live' && callState.peer) {
+        if (state.flagCache[callState.key] === undefined) fetchRoomFlag(callState.peer);
+        const flag = state.flagCache[callState.key];
+        const flagEmoji = flag ? flag : '⚫';
+        const talkIcon = callState.talkState === 'me' ? '➡️' : callState.talkState === 'them' ? '⬅️' : '📱';
+        callHtml = `<span class="room-call" data-call="hangup" title="Tap to close connection" style="cursor:pointer">${talkIcon} ${escapeHtml(callState.peer)} <span style="display:inline-block;text-decoration:none">${escapeHtml(flagEmoji)}</span></span> `;
+    }
     if (others.length === 0) {
         roomStatusOpenNick = null;
-        bar.innerHTML = '<span class="room-alone">Just you</span>';
+        bar.innerHTML = callHtml + '<span class="room-alone">Just you</span>';
         return;
     }
-    bar.innerHTML = others.map(nick => {
+    bar.innerHTML = callHtml + others.map(nick => {
         const safe = escapeHtml(nick);
         const open = roomStatusOpenNick !== null && roomStatusOpenNick.toLowerCase() === nick.toLowerCase();
         // The person's flag, or the black circle when they have none
@@ -360,6 +377,12 @@ function renderRoomStatusBar() {
 }
 
 function onRoomStatusBarClick(event) {
+    const call = event.target.closest('.room-call');
+    if (call) {
+        endCall(true);
+        event.stopPropagation();
+        return;
+    }
     const item = event.target.closest('.room-dropdown-item');
     if (item) {
         composeRoomCommand(item.dataset.command);
@@ -755,6 +778,9 @@ function handleLocalCommand(input) {
         case 'alone':
             handleAloneCommand();
             break;
+        case 'phone':
+            handlePhoneCommand(args.trim());
+            break;
         case 'summon':
             if (args.toLowerCase().startsWith('exie')) {
                 handleSummonExie(args.slice(4).trim());
@@ -930,17 +956,21 @@ function updatePeerStatus(out, text) {
 }
 
 function handleSendCommand(recipient, thing) {
+    const type = (thing || '').trim().toLowerCase();
+    if (type === 'call') {
+        handlePhoneCommand(recipient);
+        return;
+    }
     if (state.userName.startsWith('guest')) {
         addMessageToChat('You must change your /name from "guest" to send an image.', 'error-message');
         return;
     }
-    const type = (thing || '').trim().toLowerCase();
     if (type !== 'i' && type !== 'img' && type !== 'image') {
-        addMessageToChat('Usage: /send recipient, image  (recipient or "all" for the room; only images for now — use i, img or image)', 'system-message');
+        addMessageToChat('Usage: /send recipient, image or call  (recipient or "all" for the room; images use i, img or image; call starts a phone call)', 'system-message');
         return;
     }
     if (!recipient) {
-        addMessageToChat('Usage: /send recipient, image  (or "all" for the whole room)', 'system-message');
+        addMessageToChat('Usage: /send recipient, image or call  (or "all" for the whole room)', 'system-message');
         return;
     }
     if (recipient.toLowerCase() === 'all') {
@@ -1462,10 +1492,607 @@ function handlePeerMessage(parts) {
         case 'bye':
             handlePeerBye(sender);
             break;
+        case 'call':
+            handleCallRequest(sender);
+            break;
+        case 'call-accept':
+            handleCallAccept(sender);
+            break;
+        case 'call-decline':
+            handleCallDecline(sender);
+            break;
+        case 'call-offer':
+            handleCallOffer(sender, payload);
+            break;
+        case 'call-answer':
+            handleCallAnswer(sender, payload);
+            break;
+        case 'call-ice':
+            handleCallIce(sender, payload);
+            break;
+        case 'call-bye':
+        case 'call-end':
+            handleCallBye(sender);
+            break;
         default:
             console.log('Unknown PEER kind:', kind);
             break;
     }
+}
+
+// ---- Peer-to-peer audio calls (/phone, /send … call) ----
+// Same ladder as images (peer-to-peer, the server only relays the
+// signaling), but the media is a WebRTC audio track, not a data
+// channel. One call at a time; a second incoming request while busy
+// is declined at once. Signaling kinds are all call-* so they never
+// collide with the file kinds (file/accept/decline/offer/answer/ice/
+// bye). STUN stun:stun.l.google.com:19302 only, same as the file flow.
+// No TURN.
+const callState = {
+    status: 'idle', // idle | ringing | incoming | connecting | live
+    peer: null,     // other party's nickname (display case)
+    key: null,      // other party's nickname, lowercase
+    pc: null,
+    localStream: null,
+    remoteAudio: null,
+    statusEl: null,   // the chat line showing ringing/live status
+    statusSpan: null, // the span inside it that gets updated
+    statusBtn: null,  // its Cancel / Hang up button
+    incomingTimer: null,
+    incomingPromptEl: null,
+    pendingOffer: null, // SDP offer that arrived before the PC existed
+    pendingIce: [],
+    // Talking indicator: AnalyserNodes on the local mic and the
+    // remote stream, polled while live. talkState is 'me' (I am
+    // talking), 'them' (the partner is talking) or 'idle' (quiet).
+    audioCtx: null,
+    localAnalyser: null,
+    localSource: null,
+    remoteAnalyser: null,
+    remoteSource: null,
+    talkTimer: null,
+    talkState: 'idle',
+};
+
+function updateCallStatus(text) {
+    if (callState.statusSpan) callState.statusSpan.textContent = text;
+}
+
+function handlePhoneCommand(recipient) {
+    if (state.userName.startsWith('guest')) {
+        addMessageToChat('You must change your /name from "guest" to make a phone call.', 'error-message');
+        return;
+    }
+    if (!recipient) {
+        addMessageToChat('Usage: /phone recipient', 'system-message');
+        return;
+    }
+    if (recipient.toLowerCase() === 'all') {
+        addMessageToChat('Phone calls are one-to-one — pick one person.', 'system-message');
+        return;
+    }
+    if (callState.status !== 'idle') {
+        addMessageToChat(`Already on a call with ${escapeHtml(callState.peer)}. Hang up first.`, 'error-message');
+        return;
+    }
+    const key = recipient.toLowerCase();
+    callState.status = 'ringing';
+    callState.peer = recipient;
+    callState.key = key;
+    serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|call|`);
+    addMessageToChat(`Requesting peer-to-peer audio channel "phone call" with ${escapeHtml(recipient)}`, 'system-message');
+    // Ringing line with a Cancel button, like the image send's.
+    const p = addMessageToChat('', 'system-message');
+    const span = document.createElement('span');
+    span.textContent = `It's ringing.`;
+    p.appendChild(span);
+    const btn = document.createElement('button');
+    btn.textContent = 'Cancel';
+    btn.addEventListener('click', () => {
+        btn.disabled = true;
+        const wasLive = callState.status === 'live';
+        const spanEl = callState.statusSpan;
+        endCall(true);
+        if (spanEl) spanEl.textContent = wasLive ? `Call with ${recipient} ended.` : `Cancelled the call to ${recipient}.`;
+    });
+    p.appendChild(document.createTextNode(' '));
+    p.appendChild(btn);
+    callState.statusEl = p;
+    callState.statusSpan = span;
+    callState.statusBtn = btn;
+}
+
+function handleCallRequest(sender) {
+    const key = sender.toLowerCase();
+    // One call at a time: busy, or already deciding on one.
+    if (callState.status !== 'idle') {
+        serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|call-decline|`);
+        return;
+    }
+    const p = document.createElement('p');
+    p.className = 'system-message';
+    p.innerHTML = `<b>${escapeHtml(sender)}</b> is requesting a voice channel communiqué "a phone call" Answer? (Y/n)<br><span class="peer-timer"></span> `;
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'I Accept';
+    const rejectBtn = document.createElement('button');
+    rejectBtn.textContent = 'I Reject';
+    p.appendChild(acceptBtn);
+    p.appendChild(document.createTextNode(' '));
+    p.appendChild(rejectBtn);
+    chatOutput.appendChild(p);
+    scrollToBottom();
+
+    callState.status = 'incoming';
+    callState.peer = sender;
+    callState.key = key;
+    callState.incomingPromptEl = p;
+
+    let secondsLeft = Math.round(PEER_ACCEPT_TIMEOUT_MS / 1000);
+    const timerSpan = p.querySelector('.peer-timer');
+    const updateTimer = () => { if (timerSpan) timerSpan.textContent = `(${secondsLeft}s to decide)`; };
+    updateTimer();
+    callState.incomingTimer = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+            expireCallRequest(sender);
+        } else {
+            updateTimer();
+        }
+    }, 1000);
+
+    acceptBtn.addEventListener('click', () => { acceptCallRequest(sender); });
+    rejectBtn.addEventListener('click', () => { declineCallRequest(sender); });
+}
+
+function settleCallPrompt(note) {
+    if (callState.incomingTimer) {
+        clearInterval(callState.incomingTimer);
+        callState.incomingTimer = null;
+    }
+    const p = callState.incomingPromptEl;
+    if (!p) return;
+    p.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    const timerSpan = p.querySelector('.peer-timer');
+    if (timerSpan) timerSpan.textContent = note || '';
+}
+
+async function getCallMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('this browser cannot access a microphone');
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+}
+
+async function acceptCallRequest(sender) {
+    const key = sender.toLowerCase();
+    if (callState.status !== 'incoming' || callState.key !== key) return;
+    settleCallPrompt('(accepted — connecting…)');
+    callState.status = 'connecting';
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|call-accept|`);
+    // Mic first: no mic, no call — and the caller must be told, so
+    // they are not left ringing.
+    let stream;
+    try {
+        stream = await getCallMic();
+    } catch (e) {
+        addMessageToChat(`Could not get your microphone (${e.message || e.name || 'no microphone'}). The call was not started.`, 'error-message');
+        serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|call-decline|`);
+        endCallState();
+        return;
+    }
+    callState.localStream = stream;
+    await setupCallPC(sender, key, false);
+}
+
+function declineCallRequest(sender) {
+    const key = sender.toLowerCase();
+    if (callState.status !== 'incoming' || callState.key !== key) return;
+    settleCallPrompt('(declined)');
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|call-decline|`);
+    endCallState();
+}
+
+function expireCallRequest(sender) {
+    const key = sender.toLowerCase();
+    if (callState.status !== 'incoming' || callState.key !== key) return;
+    settleCallPrompt('(no answer — expired)');
+    serverApi.sendWsMessage(`PEER|${state.userName}|${sender}|call-decline|`);
+    endCallState();
+}
+
+async function handleCallAccept(recipient) {
+    const key = recipient.toLowerCase();
+    if (callState.status !== 'ringing' || callState.key !== key) return;
+    callState.status = 'connecting';
+    updateCallStatus(`Connecting to ${recipient}…`);
+    // The mic is requested now that the call is accepted (not before
+    // ringing, so a mic failure never rings the other side).
+    let stream;
+    try {
+        stream = await getCallMic();
+    } catch (e) {
+        addMessageToChat(`Could not get your microphone (${e.message || e.name || 'no microphone'}). The call was not started.`, 'error-message');
+        serverApi.sendWsMessage(`PEER|${state.userName}|${recipient}|call-bye|`);
+        endCallState();
+        return;
+    }
+    callState.localStream = stream;
+    await setupCallPC(recipient, key, true);
+}
+
+async function setupCallPC(peer, key, isCaller) {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    callState.pc = pc;
+    if (callState.localStream) {
+        callState.localStream.getTracks().forEach(track => pc.addTrack(track, callState.localStream));
+    }
+    setupLocalAnalyser();
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            const payload = b64urlEncode(JSON.stringify(event.candidate.toJSON()));
+            serverApi.sendWsMessage(`PEER|${state.userName}|${peer}|call-ice|${payload}`);
+        }
+    };
+    pc.ontrack = (event) => {
+        if (event.streams && event.streams[0]) attachRemoteAudio(event.streams[0]);
+    };
+    pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            setCallLive();
+        } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+            // 'disconnected' is left alone — it often recovers on its
+            // own, and ending on it would drop live calls on a blip.
+            if (callState.status === 'live' || callState.status === 'connecting') {
+                addMessageToChat(`Call with ${escapeHtml(peer)} ended (connection ${pc.iceConnectionState}).`, 'system-message');
+                endCall(true);
+            }
+        }
+    };
+    if (isCaller) {
+        try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            serverApi.sendWsMessage(`PEER|${state.userName}|${peer}|call-offer|${b64urlEncode(offer.sdp)}`);
+            await flushCallIce();
+        } catch (e) {
+            console.error('Call offer failed:', e);
+            addMessageToChat(`Could not start the call with ${escapeHtml(peer)}.`, 'error-message');
+            endCall(true);
+        }
+    } else if (callState.pendingOffer) {
+        // The offer arrived while the mic prompt held us up.
+        const sdp = callState.pendingOffer;
+        callState.pendingOffer = null;
+        await applyCallOffer(peer, sdp);
+    }
+}
+
+async function applyCallOffer(peer, sdp) {
+    const pc = callState.pc;
+    if (!pc) return;
+    try {
+        await pc.setRemoteDescription({ type: 'offer', sdp: sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await flushCallIce();
+        serverApi.sendWsMessage(`PEER|${state.userName}|${peer}|call-answer|${b64urlEncode(answer.sdp)}`);
+    } catch (e) {
+        console.error('Call answer failed:', e);
+        addMessageToChat(`Could not answer the call from ${escapeHtml(peer)}.`, 'error-message');
+        endCall(true);
+    }
+}
+
+async function handleCallOffer(sender, payload) {
+    const key = sender.toLowerCase();
+    if (callState.status !== 'connecting' || callState.key !== key) return;
+    let sdp;
+    try {
+        sdp = b64urlDecode(payload);
+    } catch (e) {
+        console.error('Bad call-offer payload:', e);
+        return;
+    }
+    if (!callState.pc) {
+        // The mic prompt held us up; the offer waits for the PC.
+        callState.pendingOffer = sdp;
+        return;
+    }
+    await applyCallOffer(sender, sdp);
+}
+
+async function handleCallAnswer(recipient, payload) {
+    const key = recipient.toLowerCase();
+    if (callState.status !== 'connecting' || callState.key !== key || !callState.pc) return;
+    let sdp;
+    try {
+        sdp = b64urlDecode(payload);
+    } catch (e) {
+        console.error('Bad call-answer payload:', e);
+        return;
+    }
+    try {
+        await callState.pc.setRemoteDescription({ type: 'answer', sdp: sdp });
+        await flushCallIce();
+    } catch (e) {
+        console.error('Call answer failed:', e);
+        endCall(true);
+    }
+}
+
+async function handleCallIce(sender, payload) {
+    const key = sender.toLowerCase();
+    if (callState.key !== key || (callState.status !== 'connecting' && callState.status !== 'live')) return;
+    let candidate;
+    try {
+        candidate = JSON.parse(b64urlDecode(payload));
+    } catch (e) {
+        console.error('Bad call-ice payload:', e);
+        return;
+    }
+    if (!callState.pc || !callState.pc.remoteDescription) {
+        // Remote description not set yet: hold the candidate.
+        callState.pendingIce.push(candidate);
+        return;
+    }
+    try {
+        await callState.pc.addIceCandidate(candidate);
+    } catch (e) {
+        console.error('addIceCandidate failed:', e);
+    }
+}
+
+async function flushCallIce() {
+    const queued = callState.pendingIce || [];
+    callState.pendingIce = [];
+    if (!callState.pc) return;
+    for (const candidate of queued) {
+        try {
+            await callState.pc.addIceCandidate(candidate);
+        } catch (e) {
+            console.error('addIceCandidate failed:', e);
+        }
+    }
+}
+
+function handleCallDecline(sender) {
+    const key = sender.toLowerCase();
+    if (callState.key !== key) return;
+    if (callState.status === 'ringing') {
+        updateCallStatus(`${sender} declined your call.`);
+    } else if (callState.status === 'incoming') {
+        settleCallPrompt('(cancelled by caller)');
+    } else if (callState.status === 'connecting') {
+        addMessageToChat(`Call with ${escapeHtml(sender)} could not be started.`, 'system-message');
+    } else {
+        return;
+    }
+    endCallState();
+}
+
+function handleCallBye(sender) {
+    const key = sender.toLowerCase();
+    if (callState.key !== key) return;
+    if (callState.status === 'live' || callState.status === 'connecting') {
+        addMessageToChat(`${sender} ended the call.`, 'system-message');
+    } else if (callState.status === 'incoming') {
+        settleCallPrompt('(caller hung up)');
+    } else if (callState.status === 'ringing') {
+        updateCallStatus(`${sender} ended the call.`);
+    } else {
+        return;
+    }
+    endCallState();
+}
+
+function attachRemoteAudio(stream) {
+    if (!stream) return;
+    setupRemoteAnalyser(stream);
+    if (!callState.remoteAudio) {
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.style.display = 'none';
+        document.body.appendChild(audio);
+        callState.remoteAudio = audio;
+    }
+    callState.remoteAudio.srcObject = stream;
+    let playPromise = null;
+    try {
+        playPromise = callState.remoteAudio.play();
+    } catch (e) {
+        playPromise = Promise.reject(e);
+    }
+    if (playPromise && playPromise.catch) {
+        playPromise.catch(() => {
+            // Autoplay blocked: the next tap anywhere starts the audio.
+            const retry = () => {
+                if (callState.remoteAudio) callState.remoteAudio.play().catch(() => {});
+                document.removeEventListener('click', retry);
+            };
+            document.addEventListener('click', retry);
+            addMessageToChat('Tap anywhere to hear the call audio (the browser blocked autoplay).', 'system-message');
+        });
+    }
+}
+
+function ensureCallStatusLine() {
+    if (callState.statusEl) return;
+    const peer = callState.peer;
+    const p = addMessageToChat('', 'system-message');
+    const span = document.createElement('span');
+    p.appendChild(span);
+    const btn = document.createElement('button');
+    btn.textContent = 'Hang up';
+    btn.addEventListener('click', () => {
+        btn.disabled = true;
+        const spanEl = callState.statusSpan;
+        endCall(true);
+        if (spanEl) spanEl.textContent = `Call with ${peer} ended.`;
+    });
+    p.appendChild(document.createTextNode(' '));
+    p.appendChild(btn);
+    callState.statusEl = p;
+    callState.statusSpan = span;
+    callState.statusBtn = btn;
+}
+
+function setCallLive() {
+    if (callState.status !== 'connecting') return;
+    callState.status = 'live';
+    ensureCallStatusLine();
+    updateCallStatus(`On a call with ${callState.peer}.`);
+    if (callState.statusBtn) callState.statusBtn.textContent = 'Hang up';
+    renderRoomStatusBar();
+    startCallTalkPoll();
+}
+
+// ---- Talking indicator ----
+// An AnalyserNode on each stream, polled while live. The analyser is
+// a dead end (never connected to the destination), so the mic is
+// measured, never played back — no feedback. Level is the RMS of the
+// time-domain samples; above ~0.02 counts as talking. The partner
+// wins when both talk at once, so an incoming voice is never hidden
+// by your own mic.
+function ensureCallAudioCtx() {
+    if (callState.audioCtx) return callState.audioCtx;
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        callState.audioCtx = new AC();
+        return callState.audioCtx;
+    } catch (e) {
+        console.error('Call audio context failed:', e);
+        return null;
+    }
+}
+
+function setupLocalAnalyser() {
+    if (!callState.localStream || callState.localAnalyser) return;
+    const ctx = ensureCallAudioCtx();
+    if (!ctx) return;
+    try {
+        const src = ctx.createMediaStreamSource(callState.localStream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        src.connect(analyser);
+        callState.localSource = src;
+        callState.localAnalyser = analyser;
+    } catch (e) {
+        console.error('Local analyser setup failed:', e);
+    }
+}
+
+function setupRemoteAnalyser(stream) {
+    if (callState.remoteAnalyser) return;
+    const ctx = ensureCallAudioCtx();
+    if (!ctx) return;
+    try {
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        src.connect(analyser);
+        callState.remoteSource = src;
+        callState.remoteAnalyser = analyser;
+    } catch (e) {
+        console.error('Remote analyser setup failed:', e);
+    }
+}
+
+function callAnalyserLevel(analyser) {
+    if (!analyser) return 0;
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+    }
+    return Math.sqrt(sum / data.length);
+}
+
+function pollCallTalking() {
+    if (callState.status !== 'live') return;
+    // The context starts suspended without a gesture; resume it so
+    // the analysers actually see audio.
+    if (callState.audioCtx && callState.audioCtx.state === 'suspended') {
+        callState.audioCtx.resume().catch(() => {});
+    }
+    const TALK_THRESHOLD = 0.02;
+    const remoteLevel = callAnalyserLevel(callState.remoteAnalyser);
+    const localLevel = callAnalyserLevel(callState.localAnalyser);
+    let next = 'idle';
+    if (remoteLevel > TALK_THRESHOLD) next = 'them';
+    else if (localLevel > TALK_THRESHOLD) next = 'me';
+    if (next !== callState.talkState) {
+        callState.talkState = next;
+        renderRoomStatusBar();
+    }
+}
+
+function startCallTalkPoll() {
+    if (callState.talkTimer) return;
+    callState.talkTimer = setInterval(pollCallTalking, 150);
+}
+
+// Hang up. notify=true sends call-bye so the other side clears too;
+// a bye that arrived from the peer calls endCallState directly.
+function endCall(notify) {
+    if (callState.status === 'idle') return;
+    const peer = callState.peer;
+    if (notify && peer) {
+        serverApi.sendWsMessage(`PEER|${state.userName}|${peer}|call-bye|`);
+    }
+    endCallState();
+}
+
+function endCallState() {
+    // Stop the mic, close the PC, clear the audio element and the
+    // talking indicator; the status line (if any) keeps its last text.
+    if (callState.incomingPromptEl) settleCallPrompt('');
+    if (callState.localStream) {
+        callState.localStream.getTracks().forEach(track => { try { track.stop(); } catch (e) {} });
+        callState.localStream = null;
+    }
+    if (callState.pc) {
+        try { callState.pc.close(); } catch (e) {}
+        callState.pc = null;
+    }
+    if (callState.remoteAudio) {
+        callState.remoteAudio.srcObject = null;
+    }
+    if (callState.incomingTimer) {
+        clearInterval(callState.incomingTimer);
+        callState.incomingTimer = null;
+    }
+    if (callState.talkTimer) {
+        clearInterval(callState.talkTimer);
+        callState.talkTimer = null;
+    }
+    if (callState.localSource) {
+        try { callState.localSource.disconnect(); } catch (e) {}
+        callState.localSource = null;
+    }
+    if (callState.remoteSource) {
+        try { callState.remoteSource.disconnect(); } catch (e) {}
+        callState.remoteSource = null;
+    }
+    callState.localAnalyser = null;
+    callState.remoteAnalyser = null;
+    if (callState.audioCtx) {
+        try { callState.audioCtx.close(); } catch (e) {}
+        callState.audioCtx = null;
+    }
+    callState.incomingPromptEl = null;
+    callState.pendingOffer = null;
+    callState.pendingIce = [];
+    callState.status = 'idle';
+    callState.peer = null;
+    callState.key = null;
+    callState.statusEl = null;
+    callState.statusSpan = null;
+    callState.statusBtn = null;
+    callState.talkState = 'idle';
+    renderRoomStatusBar();
 }
 
 async function checkForMail() {
@@ -1742,6 +2369,7 @@ function showHelp() {
         <br>/im [recipient], [message] - Send an instant message to an online user (! also works). Auto-encrypts at your last /enc level; plain if none or 0.
         <br>/enc [recipient], [level,] [message] - Send an encrypted instant message (/encrypt also works). Levels: lo 32, med 128, hi 256, default 64; a number rounds down to a power of two (max 512); 0 turns auto-encryption off. The receiver sees it as an IM, in green.
         <br>/send [recipient], image - Send an image to an online user, peer to peer (/s, &gt; also work). Use "all" as the recipient to send to the whole room.
+        <br>/phone [recipient] - Make a peer-to-peer audio call, a phone call (/send [recipient], call also works). While a call is live the room bar shows who is talking: ➡️ you, ⬅️ them, 📱 quiet. Tap it to hang up.
         <br>/mail [recipient], [message] - Send mail to a user (/msg, /message, @ also work). Mail defaults to xx double hex; (x) hex, (rx) reverse-then-hex, (xr) hex-then-reverse pick a type, () or any unknown type is xx. Only (-) sends plain, and it warns you. Example: /mail cc, hello
         <br>/mail ? - Check for new mail (@? also works).
         <br>/invite - Get a shareable link to this chat session (/i, + also work).
@@ -1810,7 +2438,7 @@ const LOCAL_COMMANDS = [
     'name', 'nick', 'nightmode', 'darkmode', 'hercules', 'retroled', 'crt',
     'time', '12', '24', 'whoami', 'profile', 'whois', 'flag', '8ball', 'fortune',
     'uptime', 'version', 'about', 'help', 'review', 'clear', 'home', 'invite', 'i',
-    'alone', 'summon'
+    'alone', 'summon', 'phone'
 ];
 
 async function handleHistoryCommand(args) {
@@ -1931,7 +2559,7 @@ chatForm.addEventListener('submit', async (e) => {
             const thing = match[2].trim();
             handleSendCommand(recipient, thing);
         } else {
-            addMessageToChat('Usage: > recipient, image  (or "all" for the whole room)', 'system-message');
+            addMessageToChat('Usage: > recipient, image or call  (or "all" for the whole room)', 'system-message');
         }
         return;
     }
@@ -1990,7 +2618,7 @@ chatForm.addEventListener('submit', async (e) => {
                 const thing = match[2].trim();
                 handleSendCommand(recipient, thing);
             } else {
-                addMessageToChat('Usage: /send recipient, image  (or "all" for the whole room)', 'system-message');
+                addMessageToChat('Usage: /send recipient, image or call  (or "all" for the whole room)', 'system-message');
             }
         } else if (['message', 'msg'].includes(command)) {
             if (args.trim() === '?') {

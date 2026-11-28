@@ -59,7 +59,7 @@ func isSlashCommand(s string) bool {
 		"/time", "/history", "/invite", "/i", "/roll", "/flip", "/fortune",
 		"/8ball", "/uptime", "/version", "/about", "/clear", "/home",
 		"/review", "/profile", "/whois", "/flag", "/nightmode", "/darkmode",
-		"/quit", "/exit", "/q":
+		"/quit", "/exit", "/q", "/phone":
 		return true
 	}
 	return false
@@ -292,6 +292,8 @@ func (m *model) handleInput(text string) tea.Cmd {
 		m.cmdEnc(rest)
 	case "/send", "/s":
 		return m.cmdSend(rest)
+	case "/phone":
+		m.cmdPhone(rest)
 	case "/message", "/msg", "/mail":
 		m.cmdMail(rest)
 	case "/me", "/emote", "/em":
@@ -360,6 +362,7 @@ func (m *model) cmdHelp() {
 		"/im <who>, <message> - private message (! also works; auto-encrypts at your last /enc level, plain if none or 0)",
 		"/enc <who>, [level,] <message> - encrypted private message (lo 32, med 128, hi 256, default 64; 0 turns auto-encryption off)",
 		"/send <who>, image - send an image, peer to peer (/s, > also work)",
+		"/phone <who> - audio call (this client has no audio, so it just says so)",
 		"/message <who>, <message> - send mail (@ also works; defaults to xx hex; cc(x), cc(rx), cc(xr) pick a type; (-) sends plain and warns you)",
 		"/mail ? - check for new mail",
 		"/invite - shareable link to this room",
@@ -615,6 +618,17 @@ func (m *model) cmdMail(rest string) {
 	if warn {
 		m.addLine(styleErr.Render("You just sent an unencoded email. This is *not* recommended."))
 	}
+}
+
+// cmdPhone answers the /phone command. The Go client has no audio,
+// so it can never make a call — it says so plainly, in his words.
+// Any arguments are ignored: there is no call to make. Printed
+// through the same system-notice path ECHO uses (addLine + styleSys),
+// which renders no Markdown — so "totally" stays plain, no asterisks.
+func (m *model) cmdPhone(rest string) {
+	m.addLine(styleSys.Render("Phone calls require audio."))
+	m.addLine(styleSys.Render("I don't have audio."))
+	m.addLine(styleSys.Render("I'd totally do this if I did, tho."))
 }
 
 // cmdSend is the image macro. Picking Image in the dropdown composes
