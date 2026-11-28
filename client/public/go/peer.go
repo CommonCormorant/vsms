@@ -85,7 +85,8 @@ type peerIncoming struct {
 	buf        bytes.Buffer
 	pendingIce []webrtc.ICECandidateInit
 	remoteSet  bool
-	accepted   bool // true once the user answered yes to the prompt
+	accepted   bool      // true once the user answered yes to the prompt
+	acceptedAt time.Time // when the user said yes; the pending-receive record
 	done       bool
 }
 
@@ -163,6 +164,9 @@ func (m *model) peerFileAccept(sender, payload string) tea.Cmd {
 // peerPromptAccept answers the pending image prompt with yes: the
 // sender gets PEER|accept|, the entry is marked accepted, and the
 // rest of the receive flow (offer/answer/ICE/chunks) proceeds.
+// Accepting also records the pending receive (sender, file, size,
+// time) on the entry, so that if the transfer ends without saving,
+// the client can close the loop and say so instead of going silent.
 func (m *model) peerPromptAccept() {
 	sender := m.promptSender
 	if sender == "" {
@@ -173,6 +177,7 @@ func (m *model) peerPromptAccept() {
 	entry, ok := m.peer.in[key]
 	if ok {
 		entry.accepted = true
+		entry.acceptedAt = time.Now()
 	}
 	m.peer.mu.Unlock()
 	m.promptSender = ""
@@ -444,12 +449,17 @@ func (m *model) peerNotice(text string) {
 // the OnClose/DONE race: OnClose winning must not lose a finished
 // transfer, whether DONE was processed first or never arrived.
 // An incomplete transfer (buffer short of meta size, or a zero
-// size) is still dropped with no save, as before.
+// size) is still dropped with no save, as before — but if the user
+// had already accepted it, the drop is no longer silent: the
+// client prints "Did not save …", closing the loop on the file the
+// user agreed to receive. Marking the entry done when the notice
+// fires stops a late DONE from saving a truncated file afterwards.
 func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	var pc *webrtc.PeerConnection
 	var save []byte
 	var meta peerFileMeta
 	var sender string
+	var unsaved bool
 	m.peer.mu.Lock()
 	if cur, ok := m.peer.in[key]; ok && cur == entry {
 		delete(m.peer.in, key)
@@ -459,6 +469,14 @@ func (m *model) peerCleanup(key string, entry *peerIncoming) {
 			save = append([]byte(nil), entry.buf.Bytes()...)
 			meta = entry.meta
 			sender = entry.sender
+		} else if entry.accepted && !entry.done {
+			// Accepted but never saved: the transfer ended
+			// (channel closed, or the offer failed) with an
+			// incomplete buffer. Remember the file and say so.
+			entry.done = true
+			meta = entry.meta
+			sender = entry.sender
+			unsaved = true
 		}
 	}
 	m.peer.mu.Unlock()
@@ -469,19 +487,35 @@ func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	if pc != nil {
 		pc.Close()
 	}
+	if unsaved {
+		m.peerNotice("Did not save " + peerMetaInfo(meta) + " from " + sender + " — the transfer did not complete.")
+	}
 }
 
 // peerDrop ends the incoming transfer from sender (decline or bye
 // from the peer): close the connection if any and delete the entry.
 // If a prompt was pending for this sender, it is cleared and the
-// user is told the send was cancelled.
+// user is told the send was cancelled. If the user had already
+// accepted and the file never saved, the drop is not silent either:
+// the client prints "Did not save …" for the file it agreed to
+// receive. A decline or a prompt timeout never reaches that branch
+// (accepted is false there), so the decline notices stay the only
+// line for those. Marking the entry done when the notice fires
+// stops a late DONE from saving a truncated file afterwards.
 func (m *model) peerDrop(sender string) {
 	key := strings.ToLower(sender)
 	var pc *webrtc.PeerConnection
+	var meta peerFileMeta
+	var unsaved bool
 	m.peer.mu.Lock()
 	if entry, ok := m.peer.in[key]; ok {
 		delete(m.peer.in, key)
 		pc = entry.pc
+		if entry.accepted && !entry.done {
+			entry.done = true
+			meta = entry.meta
+			unsaved = true
+		}
 	}
 	m.peer.mu.Unlock()
 	if pc != nil {
@@ -490,6 +524,9 @@ func (m *model) peerDrop(sender string) {
 	if m.promptSender != "" && strings.EqualFold(m.promptSender, sender) {
 		m.promptSender = ""
 		m.addLine(styleSys.Render("Image from " + sender + " cancelled."))
+	}
+	if unsaved {
+		m.peerNotice("Did not save " + peerMetaInfo(meta) + " from " + sender + " — the transfer did not complete.")
 	}
 }
 
