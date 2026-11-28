@@ -88,6 +88,7 @@ type peerIncoming struct {
 	accepted   bool      // true once the user answered yes to the prompt
 	acceptedAt time.Time // when the user said yes; the pending-receive record
 	done       bool
+	lastPct    int // last progress quartile printed (0, 25, 50, 75)
 }
 
 // peerOutgoing is one outgoing file transfer (this client sends).
@@ -343,17 +344,44 @@ func (m *model) peerIce(sender, payload string) {
 // peerDataMessage handles one data-channel message: binary chunks
 // append to the buffer; the string 'DONE' finishes the transfer.
 func (m *model) peerDataMessage(entry *peerIncoming, key string, msg webrtc.DataChannelMessage) {
+	// A string DONE can arrive as binary (PPID 53) from some senders
+	// (the browser). Recognize it by content, not only by IsString,
+	// or the save never runs and the transfer ends silently. A real
+	// image chunk that is exactly the 4 bytes "DONE" is a negligible
+	// risk — chunks are 16 KB.
+	if string(msg.Data) == "DONE" {
+		m.peerFinish(entry, key)
+		return
+	}
 	if msg.IsString {
-		if string(msg.Data) == "DONE" {
-			m.peerFinish(entry, key)
-		}
 		return
 	}
 	m.peer.mu.Lock()
+	var crossed int
+	var have int64
 	if cur, ok := m.peer.in[key]; ok && cur == entry && !entry.done {
 		entry.buf.Write(msg.Data)
+		if entry.meta.Size > 0 {
+			have = int64(entry.buf.Len())
+			pct := int(have * 100 / entry.meta.Size)
+			for _, q := range []int{25, 50, 75} {
+				if entry.lastPct < q && pct >= q {
+					crossed = q
+				}
+			}
+			if crossed > 0 {
+				entry.lastPct = crossed
+			}
+		}
 	}
 	m.peer.mu.Unlock()
+	// Receive progress, mirroring the sender's 25/50/75% milestones:
+	// without it a stalled receive is silent and the user cannot tell
+	// it apart from a working one. Only the milestones print, once
+	// each, never one line per chunk.
+	if crossed > 0 {
+		m.peerNotice(fmt.Sprintf("Receiving image from %s… %d%% (%s of %s)", entry.sender, crossed, formatSize(have), formatSize(entry.meta.Size)))
+	}
 }
 
 // peerFinish saves the received bytes to ~/retro/imgs/<name> and
@@ -442,12 +470,15 @@ func (m *model) peerNotice(text string) {
 // peerCleanup closes the peer connection (if any) and drops the
 // incoming entry, but only if the entry in the map is still this
 // one — a newer transfer from the same sender must not be clobbered.
-// If the whole file already arrived (buffer length == meta size)
+// If the whole file already arrived (buffer length >= meta size)
 // but DONE never landed — the channel closed before a queued DONE
 // was dispatched, so peerFinish never ran — the file is complete,
 // so save it instead of dropping it. That is the other half of
 // the OnClose/DONE race: OnClose winning must not lose a finished
 // transfer, whether DONE was processed first or never arrived.
+// The snapshot is truncated to the declared size, so a DONE that
+// arrived as binary (4 stray bytes in the buffer) or any other
+// extra byte neither blocks the save nor corrupts the file.
 // An incomplete transfer (buffer short of meta size, or a zero
 // size) is still dropped with no save, as before — but if the user
 // had already accepted it, the drop is no longer silent: the
@@ -464,9 +495,9 @@ func (m *model) peerCleanup(key string, entry *peerIncoming) {
 	if cur, ok := m.peer.in[key]; ok && cur == entry {
 		delete(m.peer.in, key)
 		pc = entry.pc
-		if !entry.done && entry.accepted && entry.meta.Size > 0 && entry.buf.Len() == int(entry.meta.Size) {
+		if !entry.done && entry.accepted && entry.meta.Size > 0 && entry.buf.Len() >= int(entry.meta.Size) {
 			entry.done = true
-			save = append([]byte(nil), entry.buf.Bytes()...)
+			save = append([]byte(nil), entry.buf.Bytes()[:entry.meta.Size]...)
 			meta = entry.meta
 			sender = entry.sender
 		} else if entry.accepted && !entry.done {
