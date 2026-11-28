@@ -1360,11 +1360,21 @@ function completePeerSend(out, key) {
     } else {
         updatePeerStatus(out, `Image sent to ${out.recipient}.`);
     }
-    // Give the receiver a beat to process DONE, then close.
-    setTimeout(() => {
-        closePeerConnection(out);
-        if (peerState.outgoing[key] === out) delete peerState.outgoing[key];
-    }, 1000);
+    // Wait for the queued bytes to drain before closing: the tail
+    // of the file is still in flight after DONE, and closing on a
+    // fixed timer truncates it on a slow uplink. Poll
+    // bufferedAmount until it reaches 0 (or the channel closes),
+    // capped at ~10 s so a stuck drain cannot hang the send.
+    const drainStarted = Date.now();
+    const waitDrain = () => {
+        if (!out.dc || out.dc.readyState !== 'open' || out.dc.bufferedAmount === 0 || Date.now() - drainStarted > 10000) {
+            closePeerConnection(out);
+            if (peerState.outgoing[key] === out) delete peerState.outgoing[key];
+            return;
+        }
+        setTimeout(waitDrain, 50);
+    };
+    waitDrain();
 }
 
 function onPeerFileData(entry, data) {

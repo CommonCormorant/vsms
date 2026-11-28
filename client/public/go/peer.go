@@ -923,7 +923,19 @@ func (m *model) peerSendChunks(entry *peerOutgoing, key string) {
 	entry.done = true
 	m.peer.mu.Unlock()
 	m.peerNotice("Image sent to " + entry.recipient + " (" + formatSize(total) + ").")
-	// Give the receiver a beat to process DONE, then close.
-	time.Sleep(time.Second)
+	// Wait for the queued bytes to drain before closing: the tail
+	// of the file is still in flight after DONE, and closing on a
+	// fixed timer truncates it on a slow uplink. Poll
+	// BufferedAmount until it reaches 0 (or the channel closes),
+	// capped at ~10 s so a stuck drain cannot hang the send.
+	for i := 0; i < 200; i++ {
+		if dc.ReadyState() != webrtc.DataChannelStateOpen {
+			break
+		}
+		if dc.BufferedAmount() == 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	m.peerOutCleanup(key, entry)
 }
